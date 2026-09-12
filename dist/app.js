@@ -22,8 +22,8 @@ const topicPatterns = {
   price: /gia|chi phi|ngan sach|dau tu|hoc phi|hoan von|roi|trieu|tien/,
   proof: /chung minh|du lieu|case|vi du|can cu|cam ket|do duoc|chi so|ket qua|bao lau|x\d/,
   risk: /rui ro|that bai|khong thanh cong|nhuoc diem|mat|anh huong|trach nhiem/,
-  implementation: /trien khai|ap dung|quy trinh|buoc|tuan dau|doi ngu|nhan su|crm|cong cu|ho tro/,
-  time: /thoi gian|lich|ban|gio|tuan|thang|buoi|kip/,
+  implementation: /trien khai|ap dung|quy trinh|buoc|tuan dau|doi ngu|nhan su|crm|cong cu|ho tro|support|huong dan/,
+  time: /thoi gian|lich|ban|gio|tuan|thang|buoi|kip|hoc|offline|online/,
   authority: /doi tac|chong|vo|sep|lanh dao|quyet dinh|duyet/,
   discovery: /doanh thu|loi nhuan|quy mo|kho khan|muc tieu|mong muon|marketing|sale|van hanh/,
   closing: /dang ky|thanh toan|giu cho|chot|hen|goi lai|buoc tiep/
@@ -98,20 +98,81 @@ function scenarioPriority() {
   return ['clarify','implementation','trust','proof','price'];
 }
 
+function pickNatural(options) {
+  const available = options.map(fillTemplate).filter(reply => !state.usedReplies.includes(reply));
+  if (!available.length) return null;
+  const reply = available[state.turn % available.length];
+  state.usedReplies.push(reply);
+  return reply;
+}
+
 function chooseAdaptiveReply(text) {
   const quality = assessTurn(text);
-  const sale = quote(text);
-  const customer = quote(quality.customer, 72);
-  let direct;
-  if (quality.gibberish) direct = `Chị đang hỏi “${customer}”. Câu vừa rồi không có nội dung để chị đánh giá. Em trả lời thẳng câu đó giúp chị.`;
-  else if (/chi noi gi|khong hieu/.test(normalize(text))) direct = `Chị vừa hỏi về “${quote(quality.customer, 48)}”. Nếu em chưa rõ, hãy nhắc lại điều em hiểu và hỏi đúng một ý cần chị làm rõ; đừng chuyển sang chủ đề khác.`;
-  else if (quality.hostile) direct = `Cách em nói “${sale}” đang đẩy trách nhiệm sang khách hàng. Chị cần em trả lời chuyên nghiệp: rủi ro thực tế là gì và TAKI giảm rủi ro đó ra sao?`;
-  else if (!quality.relevant) direct = `Câu “${sale}” chưa trả lời điều chị vừa hỏi: “${customer}”. Em trả lời đúng trọng tâm trước, rồi hãy hỏi thêm chị.`;
-  else if (quality.unsupported && /x\s*\d|gap \d|doanh thu tang/.test(normalize(text))) direct = `Em vừa nói “${sale}”. Căn cứ nào để nói mức tăng đó, điều kiện áp dụng là gì và nếu không đạt thì đánh giá ra sao?`;
-  else if (quality.unsupported) direct = `Khẳng định “${sale}” nghe quá tuyệt đối. Em nói rõ điều kiện, giới hạn và rủi ro thực tế thay vì cam kết chung được không?`;
-  else if (!quality.specific) direct = `Em vừa nói “${sale}”, nhưng chị chưa hình dung được cách làm. Cho chị một bước triển khai cụ thể gắn với tình trạng hiện tại.`;
-  else if (!quality.question) direct = `Chị hiểu ý “${sale}”. Nhưng em chưa kiểm tra xem điều đó có đúng với doanh nghiệp chị không; em cần hỏi chị dữ kiện nào trước?`;
-  if (direct && !state.usedReplies.includes(direct)) { state.usedReplies.push(direct); return direct; }
+  const n = normalize(text);
+  const contextual = [];
+
+  if (quality.gibberish) contextual.push(
+    'Chị chưa nhận được câu trả lời nào rõ ràng cả. Em giải thích lại đúng vấn đề chị đang lo được không?',
+    'Chị chưa hiểu ý em. Em nói lại ngắn gọn, cụ thể và đúng câu hỏi của chị nhé.'
+  );
+  else if (/chi noi gi|khong hieu/.test(n)) contextual.push(
+    'Chị đang muốn biết rủi ro thật khi triển khai. Nếu em chưa rõ ý nào thì hỏi lại chị, đừng chuyển sang chuyện khác.',
+    'Điều chị cần là một câu trả lời thực tế về phần khó khi áp dụng. Em làm rõ giúp chị nhé.'
+  );
+  else if (quality.hostile) contextual.push(
+    'Chị không đồng ý với cách đẩy toàn bộ rủi ro sang người học. Bản thân chương trình có giới hạn gì và bên em chịu trách nhiệm phần nào?',
+    'Nếu kết quả chỉ phụ thuộc vào khách hàng thì vai trò hỗ trợ của TAKI nằm ở đâu?'
+  );
+  else if (quality.unsupported && /x\s*\d|gap \d|doanh thu tang/.test(n)) contextual.push(
+    'Con số tăng gấp đôi dựa trên dữ liệu nào? Doanh nghiệp như chị cần đáp ứng điều kiện gì mới có thể đạt mức đó?',
+    'Chị chưa thể tin ngay vào mức tăng đó. Bên em đo trước và sau chương trình bằng chỉ số nào?'
+  );
+  else if (quality.unsupported) contextual.push(
+    'Chị thấy khẳng định đó hơi tuyệt đối. Trường hợp nào kết quả có thể không như kỳ vọng?',
+    'Nếu thực tế không thuận lợi như vậy thì phương án xử lý của bên em là gì?'
+  );
+
+  if (/support|ho tro|kem 1-1|mot mot/.test(n)) contextual.push(
+    'Hỗ trợ 1-1 cụ thể trong bao lâu, qua kênh nào và thường mất bao lâu mới có người phản hồi?',
+    'Nếu chị vướng ngoài giờ học thì ai trực tiếp xử lý, hay chị chỉ được gửi câu hỏi rồi chờ?',
+    'Phần hỗ trợ đó đã nằm trong học phí chưa, hay khi triển khai sâu chị phải trả thêm?',
+    'Một người hỗ trợ bao nhiêu học viên cùng lúc? Chị muốn biết mức độ theo sát thực tế.'
+  );
+  if (/offline|truc tiep|len van phong/.test(n)) contextual.push(
+    'Lịch học trực tiếp cụ thể thế nào? Nếu chị bận đột xuất một buổi thì có phương án học bù không?',
+    'Học tại lớp xong về doanh nghiệp triển khai mới là phần khó. Khi đó bên em theo sát bằng cách nào?',
+    'Chị ở xa nên việc lên văn phòng nhiều lần khá bất tiện. Có cách hỗ trợ từ xa tương đương không?'
+  );
+  if (/tung buoc|buoc dau|trien khai|ap dung|quy trinh/.test(n)) contextual.push(
+    'Vậy tuần đầu tiên đội chị phải làm ba việc gì, và ai bên TAKI sẽ kiểm tra kết quả?',
+    'Đội chị đang dùng quy trình cũ. Bên em sẽ chỉnh trên hệ thống hiện tại hay yêu cầu làm lại từ đầu?',
+    'Nếu nhân sự làm chậm hơn kế hoạch thì lộ trình được điều chỉnh ra sao?'
+  );
+  if (/thoi gian|lich|ban|gio|tuan|thang|buoi/.test(n)) contextual.push(
+    'Mỗi tuần chị phải dành tối thiểu bao nhiêu giờ thì mới theo được?',
+    'Lịch của chị thường thay đổi sát giờ. Chương trình xử lý việc vắng buổi như thế nào?',
+    'Khoảng bao lâu chị có thể áp dụng được phần đầu tiên vào công việc thật?'
+  );
+  if (/gia|chi phi|ngan sach|hoc phi|trieu/.test(n)) contextual.push(
+    'Ngoài học phí này chị còn phải dự trù thêm công cụ hoặc nhân sự nào không?',
+    'Với mức đầu tư đó, chỉ số nào nên cải thiện để chị biết khoản tiền này xứng đáng?',
+    'Bên khác có mức giá thấp hơn. Điểm khác biệt nào tạo ra giá trị thực chứ không chỉ khác về hình thức học?'
+  );
+  if (/doi tac|chong|vo|sep|lanh dao|quyet dinh/.test(n)) contextual.push(
+    'Đối tác của chị sẽ hỏi về hiệu quả và rủi ro đầu tiên. Em có tài liệu nào trả lời đúng hai điểm đó không?',
+    'Nếu người duyệt muốn nghe trực tiếp thì em có thể trình bày ngắn với họ vào thời gian nào?'
+  );
+  if (!quality.relevant) contextual.push(
+    'Hình như em chưa trả lời đúng điều chị đang lo. Chị cần biết việc triển khai có thực tế với đội hiện tại hay không.',
+    'Phần em vừa giải thích chưa giúp chị quyết định. Em quay lại đúng câu hỏi của chị và nói cụ thể hơn nhé.'
+  );
+  if (!quality.specific) contextual.push(
+    'Chị vẫn chưa hình dung được cách làm trong thực tế. Em cho chị một ví dụ sát với đội hiện tại nhé.',
+    'Nghe thì hợp lý, nhưng bước đầu tiên chị phải làm là gì và kết quả được kiểm tra ra sao?'
+  );
+
+  const natural = pickNatural(contextual);
+  if (natural) return natural;
 
   const a = analyzeSeller(text);
   let categories = [];
@@ -128,7 +189,7 @@ function chooseAdaptiveReply(text) {
   Object.values(banks).forEach(pool => pool.forEach(reply => candidates.push(reply)));
   const unused = [...new Set(candidates.map(fillTemplate))].filter(reply => !state.usedReplies.includes(reply));
   if (!unused.length) return 'Chị vẫn chưa bị thuyết phục. Em tóm tắt lại đúng ba điều chị quan tâm rồi đặt một câu hỏi mới nhé?';
-  const seed = [...normalize(text + customer)].reduce((sum, char) => sum + char.charCodeAt(0), state.turn * 17);
+  const seed = [...normalize(text + lastCustomerMessage())].reduce((sum, char) => sum + char.charCodeAt(0), state.turn * 17);
   const reply = unused[seed % Math.min(unused.length, 7)];
   state.usedReplies.push(reply);
   return reply;
