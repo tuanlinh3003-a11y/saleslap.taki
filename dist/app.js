@@ -1,6 +1,7 @@
 const { products, process, scenarios } = window.TAKI_DATA;
+const { maxTurns, banks, productChallenges } = window.TAKI_CHALLENGE_DATA;
 
-let state = { view: 'home', scenario: null, productId: 'all', messages: [], turn: 0, feedback: [], busy: false };
+let state = { view: 'home', scenario: null, productId: 'all', messages: [], turn: 0, feedback: [], busy: false, usedReplies: [], covered: [] };
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 
@@ -11,6 +12,65 @@ function showToast(text) { toast.textContent = text; toast.classList.add('show')
 function esc(text) { const div = document.createElement('div'); div.textContent = text; return div.innerHTML; }
 function money(product) { return product.price ? new Intl.NumberFormat('vi-VN').format(product.price) + 'đ' : product.priceLabel; }
 function productById(id) { return products.find(p => p.id === id); }
+function normalize(text) { return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
+function has(text, pattern) { return pattern.test(normalize(text)); }
+function sellerMessages() { return state.messages.filter(m => m.role === 'seller').map(m => m.text); }
+function fillTemplate(text) { const p = productById(state.productId); return text.replaceAll('{product}', p.name).replaceAll('{price}', money(p)); }
+
+function analyzeSeller(text) {
+  const all = sellerMessages().join(' ');
+  const n = normalize(text);
+  const intents = [];
+  if (/gia|chi phi|ngan sach|dau tu|hoan von|roi/.test(n)) intents.push('price');
+  if (/thoi gian|lich|ban|gio|tuan|thang/.test(n)) intents.push('time');
+  if (/doi tac|chong|vo|sep|lanh dao|quyet dinh/.test(n)) intents.push('authority');
+  if (/trien khai|ap dung|quy trinh|buoc|doi ngu|nhan su|crm|ho tro/.test(n)) intents.push('implementation');
+  if (/case|chung minh|ket qua|du lieu|vi du|cam ket/.test(n)) intents.push('proof');
+  if (/dang kinh doanh|doanh thu|loi nhuan|quy mo|kho khan|muc tieu|mong muon/.test(n)) intents.push('discovery');
+  if (/dang ky|thanh toan|giu cho|chot|hen|goi lai|buoc tiep/.test(n)) intents.push('closing');
+  const questions = (text.match(/\?/g) || []).length;
+  const empathy = /dạ|em hiểu|chia sẻ|cảm ơn|yên tâm|đồng ý/i.test(text);
+  const productTokens = normalize(productById(state.productId).name).split(' ').filter(x => x.length > 2);
+  const productFit = productTokens.some(token => n.includes(token)) || normalize(productById(state.productId).description).split(' ').filter(x => x.length > 5).some(token => n.includes(token));
+  const vague = text.trim().length < 55 || /giup|hieu qua|toi uu|he thong|rat tot|phu hop/.test(n) && !/\d/.test(n);
+  const previous = sellerMessages().slice(0, -1).map(normalize);
+  const repeated = previous.some(p => p.length > 20 && (p.includes(n.slice(0, 28)) || n.includes(p.slice(0, 28))));
+  return { intents, questions, empathy, productFit, vague, repeated, all };
+}
+
+function scenarioPriority() {
+  const id = state.scenario.id;
+  if (id === 'price') return ['price','proof','implementation','trust','closing'];
+  if (id === 'time') return ['time','implementation','proof','trust','closing'];
+  if (id === 'partner') return ['authority','proof','price','closing','trust'];
+  if (id === 'discovery') return ['discovery','trust','implementation','price','proof'];
+  if (id === 'solution') return ['clarify','implementation','proof','price','trust'];
+  if (id === 'opening') return ['time','trust','discovery','clarify','closing'];
+  if (id === 'failed-before') return ['trust','proof','implementation','price','closing'];
+  return ['clarify','implementation','trust','proof','price'];
+}
+
+function chooseAdaptiveReply(text) {
+  const a = analyzeSeller(text);
+  let categories = [];
+  if (a.repeated) categories.push('trust');
+  if (!a.empathy && state.turn > 0) categories.push('trust');
+  if (!a.questions) categories.push('clarify');
+  if (a.vague) categories.push('clarify','proof');
+  categories.push(...a.intents, ...scenarioPriority());
+  categories = [...new Set(categories)];
+
+  const candidates = [];
+  if ((a.productFit || state.turn >= 2) && productChallenges[state.productId]) candidates.push(...productChallenges[state.productId]);
+  categories.forEach(category => (banks[category] || []).forEach(reply => candidates.push(reply)));
+  Object.values(banks).forEach(pool => pool.forEach(reply => candidates.push(reply)));
+  const unused = [...new Set(candidates.map(fillTemplate))].filter(reply => !state.usedReplies.includes(reply));
+  if (!unused.length) return 'Chị vẫn chưa bị thuyết phục. Em tóm tắt lại đúng ba điều chị quan tâm rồi đặt một câu hỏi mới nhé?';
+  const seed = [...normalize(text)].reduce((sum, char) => sum + char.charCodeAt(0), state.turn * 17);
+  const reply = unused[seed % Math.min(unused.length, 7)];
+  state.usedReplies.push(reply);
+  return reply;
+}
 
 function renderHome() {
   state.view = 'home';
@@ -37,7 +97,7 @@ function renderProductCard(p) {
 function startScenario(id) {
   const scenario = scenarios.find(s => s.id === id);
   const productId = state.productId === 'all' ? scenario.productIds[0] : state.productId;
-  state = { view: 'chat', scenario, productId, messages: [{ role: 'customer', text: scenario.customer }], turn: 0, feedback: [], busy: false };
+  state = { view: 'chat', scenario, productId, messages: [{ role: 'customer', text: scenario.customer }], turn: 0, feedback: [], busy: false, usedReplies: [scenario.customer], covered: [] };
   renderChat();
 }
 
@@ -45,32 +105,33 @@ function renderChat() {
   const s = state.scenario;
   app.innerHTML = `<section class="workspace">
     <div class="chat-card">
-      <div class="chat-head"><div><div class="eyebrow">${s.stage} · ${s.difficulty} · ${productById(state.productId).name}</div><h2>${s.title}</h2></div><span class="turns">Lượt ${state.turn}/6</span></div>
+      <div class="chat-head"><div><div class="eyebrow">${s.stage} · Khách khó tính · ${productById(state.productId).name}</div><h2>${s.title}</h2></div><span class="turns">Lượt ${state.turn}/${maxTurns}</span></div>
       <div id="chatLog" class="chat-log" aria-live="polite">${state.messages.map(m => `<div class="message ${m.role === 'seller' ? 'user' : ''}"><div class="bubble">${esc(m.text)}</div></div>`).join('')}${state.busy ? '<div class="typing">Khách đang nhập…</div>' : ''}</div>
       <form id="composer" class="composer"><textarea id="messageInput" aria-label="Tin nhắn cho khách" placeholder="Nhắn cho khách… (Enter để gửi)" ${state.busy ? 'disabled' : ''}></textarea><button class="primary" ${state.busy ? 'disabled' : ''}>Gửi</button></form>
     </div>
-    <aside class="coach-card"><div class="coach-title"><span>AI</span><div><div class="eyebrow">Huấn luyện viên</div><h2>Gợi ý theo lượt</h2></div></div><div class="mission"><strong>Mục tiêu:</strong><br>${s.mission}</div><div class="product-mini"><strong>${productById(state.productId).name}</strong><span>${money(productById(state.productId))}</span><small>${productById(state.productId).description}</small></div><div class="feedback">${state.feedback.length ? state.feedback.map(f => `<div class="feedback-item ${f.good ? 'good' : ''}"><strong>${f.good ? '✓ Làm tốt' : '△ Cần sửa'}</strong><br>${f.text}</div>`).join('') : '<div class="feedback-empty">Góp ý sẽ xuất hiện sau mỗi lượt nhắn.</div>'}</div><button class="end-button" data-action="finish">Kết thúc & chấm điểm</button></aside>
+    <aside class="coach-card"><div class="coach-title"><span>AI</span><div><div class="eyebrow">Huấn luyện viên</div><h2>Phân tích theo lượt</h2></div></div><div class="mission"><strong>Mục tiêu:</strong><br>${s.mission}</div><div class="challenge-status"><strong>Mức gây khó ${Math.min(100, 35 + state.turn * 5)}%</strong><span>Khách ghi nhớ toàn bộ cuộc chat và không lặp câu đã hỏi.</span></div><div class="product-mini"><strong>${productById(state.productId).name}</strong><span>${money(productById(state.productId))}</span><small>${productById(state.productId).description}</small></div><div class="feedback">${state.feedback.length ? state.feedback.map(f => `<div class="feedback-item ${f.good ? 'good' : ''}"><strong>${f.good ? '✓ Làm tốt' : '△ Cần sửa'}</strong><br>${f.text}</div>`).join('') : '<div class="feedback-empty">AI sẽ phân tích quy trình, sản phẩm và câu trả lời của bạn sau mỗi lượt.</div>'}</div><button class="end-button" data-action="finish">Kết thúc & chấm điểm</button></aside>
   </section>`;
   const log = document.querySelector('#chatLog'); log.scrollTop = log.scrollHeight;
 }
 
 function evaluate(text) {
-  const lower = text.toLowerCase();
-  const questions = (text.match(/\?/g) || []).length;
-  const empathetic = /dạ|hiểu|chia sẻ|yên tâm|cảm ơn/.test(lower);
-  const matched = state.scenario.coachKeys.filter(k => lower.includes(k)).length;
-  if (questions === 0) return { good: false, text: 'Hãy kết thúc bằng một câu hỏi mở để khách dễ tiếp tục chia sẻ.' };
-  if (empathetic && matched >= 2) return { good: true, text: `Đúng hướng ${state.scenario.stage}: đã có đồng cảm và chạm ${matched} điểm quan trọng của kịch bản.` };
-  if (!empathetic) return { good: false, text: 'Nên xác nhận hoặc đồng cảm với điều khách vừa nói trước khi hỏi tiếp.' };
-  return { good: false, text: `Câu hỏi đã mở được hội thoại, nhưng cần bám thêm: ${state.scenario.coachKeys.filter(k => !lower.includes(k)).slice(0,3).join(', ')}.` };
+  const a = analyzeSeller(text);
+  const matched = state.scenario.coachKeys.filter(k => normalize(text).includes(normalize(k)));
+  const gaps = [];
+  if (!a.empathy) gaps.push('chưa xác nhận/đồng cảm với ý khách vừa nói');
+  if (!a.questions) gaps.push('chưa có câu hỏi mở để kiểm soát cuộc trò chuyện');
+  if (a.vague) gaps.push('lợi ích còn chung, thiếu bước làm hoặc tiêu chí đo');
+  if (!a.productFit && state.turn > 1) gaps.push(`chưa nối rõ với ${productById(state.productId).name}`);
+  if (a.repeated) gaps.push('ý trả lời đang lặp lại nội dung sale đã dùng trước đó');
+  if (!gaps.length || (a.empathy && a.questions && matched.length >= 2)) return { good: true, text: `Đúng hướng ${state.scenario.stage}: có đồng cảm, câu hỏi kiểm soát và bám ${matched.length || 1} điểm của kịch bản. Khách sẽ chuyển sang phản biện sâu hơn.` };
+  return { good: false, text: `${gaps.slice(0, 2).join('; ')}. Lượt tới hãy dùng dữ kiện khách vừa nêu, gắn một lợi ích sản phẩm và hỏi một câu mới.` };
 }
 
 function sendMessage(text) {
   if (!text.trim() || state.busy) return;
   state.messages.push({ role: 'seller', text: text.trim() }); state.feedback.unshift(evaluate(text)); state.busy = true; renderChat();
   setTimeout(() => {
-    const replies = state.scenario.replies;
-    state.messages.push({ role: 'customer', text: replies[Math.min(state.turn, replies.length - 1)] });
+    state.messages.push({ role: 'customer', text: chooseAdaptiveReply(text) });
     state.turn += 1; state.busy = false; renderChat();
   }, 850);
 }
