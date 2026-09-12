@@ -1,7 +1,7 @@
 const { products, process, scenarios } = window.TAKI_DATA;
 const { maxTurns, banks, productChallenges } = window.TAKI_CHALLENGE_DATA;
 
-let state = { view: 'home', scenario: null, productId: 'all', messages: [], turn: 0, feedback: [], busy: false, usedReplies: [], covered: [] };
+let state = { view: 'home', scenario: null, productId: 'all', messages: [], turn: 0, feedback: [], busy: false, usedReplies: [], turnScores: [] };
 const app = document.querySelector('#app');
 const toast = document.querySelector('#toast');
 
@@ -15,7 +15,55 @@ function productById(id) { return products.find(p => p.id === id); }
 function normalize(text) { return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''); }
 function has(text, pattern) { return pattern.test(normalize(text)); }
 function sellerMessages() { return state.messages.filter(m => m.role === 'seller').map(m => m.text); }
+function lastCustomerMessage() { return [...state.messages].reverse().find(m => m.role === 'customer')?.text || ''; }
 function fillTemplate(text) { const p = productById(state.productId); return text.replaceAll('{product}', p.name).replaceAll('{price}', money(p)); }
+
+const topicPatterns = {
+  price: /gia|chi phi|ngan sach|dau tu|hoc phi|hoan von|roi|trieu|tien/,
+  proof: /chung minh|du lieu|case|vi du|can cu|cam ket|do duoc|chi so|ket qua|bao lau|x\d/,
+  risk: /rui ro|that bai|khong thanh cong|nhuoc diem|mat|anh huong|trach nhiem/,
+  implementation: /trien khai|ap dung|quy trinh|buoc|tuan dau|doi ngu|nhan su|crm|cong cu|ho tro/,
+  time: /thoi gian|lich|ban|gio|tuan|thang|buoi|kip/,
+  authority: /doi tac|chong|vo|sep|lanh dao|quyet dinh|duyet/,
+  discovery: /doanh thu|loi nhuan|quy mo|kho khan|muc tieu|mong muon|marketing|sale|van hanh/,
+  closing: /dang ky|thanh toan|giu cho|chot|hen|goi lai|buoc tiep/
+};
+function topicsOf(text) { const n = normalize(text); return Object.entries(topicPatterns).filter(([, pattern]) => pattern.test(n)).map(([topic]) => topic); }
+function significantWords(text) { const stop = new Set('chi em anh la va co cua cho nay do duoc mot nhung khong thi voi nhu ve da dang se gi nao sao a oi trong ben phan dieu'.split(' ')); return normalize(text).replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !stop.has(w)); }
+function quote(text, max = 58) { const clean = text.trim().replace(/\s+/g, ' '); return clean.length > max ? clean.slice(0, max).trim() + '…' : clean; }
+
+function assessTurn(text) {
+  const customer = lastCustomerMessage();
+  const n = normalize(text.trim());
+  const customerTopics = topicsOf(customer);
+  const saleTopics = topicsOf(text);
+  const saleWords = significantWords(text);
+  const overlap = significantWords(customer).filter(w => saleWords.includes(w));
+  const gibberish = text.trim().length < 12 || /^(abc|asdf|test|linh tinh|khong biet|tuy|ok|uh|u|o)[.!?\s]*$/.test(n) || /(.)\1{5,}/.test(n);
+  const hostile = /chi noi gi|khong hieu|ke chi|tuy chi|khong mua thi thoi|chi khong lam|loi cua chi/.test(n);
+  const unsupported = /x\s*\d|gap \d|cam ket|chac chan|100%|duy nhat|khong co rui ro|doanh thu tang/.test(n) && !/vi|dua tren|can cu|neu|tuy|phu thuoc|du lieu/.test(n);
+  const relevant = customerTopics.length ? customerTopics.some(t => saleTopics.includes(t)) || overlap.length >= 1 : overlap.length >= 1 || saleTopics.length > 0;
+  const empathy = /dạ|em hiểu|em đồng ý|chia sẻ|cảm ơn|yên tâm/i.test(text);
+  const question = /\?/.test(text);
+  const specific = /\d|bước|ví dụ|cụ thể|đầu tiên|sau đó|đo bằng|phụ thuộc|dựa trên/i.test(text);
+  const productFit = significantWords(productById(state.productId).name).some(w => saleWords.includes(w)) || significantWords(productById(state.productId).description).filter(w => w.length > 5).some(w => saleWords.includes(w));
+  const previous = sellerMessages().slice(0, -1).map(normalize);
+  const repeated = previous.some(p => n.length > 18 && (p.includes(n.slice(0, 26)) || n.includes(p.slice(0, 26))));
+  let score = 5;
+  if (text.trim().length >= 35) score += 10;
+  if (relevant) score += 25;
+  if (empathy) score += 10;
+  if (question) score += 15;
+  if (specific) score += 15;
+  if (productFit) score += 15;
+  score += Math.min(10, state.scenario.coachKeys.filter(k => n.includes(normalize(k))).length * 3);
+  if (gibberish) score = Math.min(score, 8);
+  if (!relevant) score -= 25;
+  if (hostile) score -= 35;
+  if (unsupported) score -= 25;
+  if (repeated) score -= 20;
+  return { score: Math.max(0, Math.min(100, score)), customer, relevant, empathy, question, specific, productFit, repeated, gibberish, hostile, unsupported };
+}
 
 function analyzeSeller(text) {
   const all = sellerMessages().join(' ');
@@ -51,6 +99,20 @@ function scenarioPriority() {
 }
 
 function chooseAdaptiveReply(text) {
+  const quality = assessTurn(text);
+  const sale = quote(text);
+  const customer = quote(quality.customer, 72);
+  let direct;
+  if (quality.gibberish) direct = `Chị đang hỏi “${customer}”. Câu vừa rồi không có nội dung để chị đánh giá. Em trả lời thẳng câu đó giúp chị.`;
+  else if (/chi noi gi|khong hieu/.test(normalize(text))) direct = `Chị vừa hỏi về “${quote(quality.customer, 48)}”. Nếu em chưa rõ, hãy nhắc lại điều em hiểu và hỏi đúng một ý cần chị làm rõ; đừng chuyển sang chủ đề khác.`;
+  else if (quality.hostile) direct = `Cách em nói “${sale}” đang đẩy trách nhiệm sang khách hàng. Chị cần em trả lời chuyên nghiệp: rủi ro thực tế là gì và TAKI giảm rủi ro đó ra sao?`;
+  else if (!quality.relevant) direct = `Câu “${sale}” chưa trả lời điều chị vừa hỏi: “${customer}”. Em trả lời đúng trọng tâm trước, rồi hãy hỏi thêm chị.`;
+  else if (quality.unsupported && /x\s*\d|gap \d|doanh thu tang/.test(normalize(text))) direct = `Em vừa nói “${sale}”. Căn cứ nào để nói mức tăng đó, điều kiện áp dụng là gì và nếu không đạt thì đánh giá ra sao?`;
+  else if (quality.unsupported) direct = `Khẳng định “${sale}” nghe quá tuyệt đối. Em nói rõ điều kiện, giới hạn và rủi ro thực tế thay vì cam kết chung được không?`;
+  else if (!quality.specific) direct = `Em vừa nói “${sale}”, nhưng chị chưa hình dung được cách làm. Cho chị một bước triển khai cụ thể gắn với tình trạng hiện tại.`;
+  else if (!quality.question) direct = `Chị hiểu ý “${sale}”. Nhưng em chưa kiểm tra xem điều đó có đúng với doanh nghiệp chị không; em cần hỏi chị dữ kiện nào trước?`;
+  if (direct && !state.usedReplies.includes(direct)) { state.usedReplies.push(direct); return direct; }
+
   const a = analyzeSeller(text);
   let categories = [];
   if (a.repeated) categories.push('trust');
@@ -66,7 +128,7 @@ function chooseAdaptiveReply(text) {
   Object.values(banks).forEach(pool => pool.forEach(reply => candidates.push(reply)));
   const unused = [...new Set(candidates.map(fillTemplate))].filter(reply => !state.usedReplies.includes(reply));
   if (!unused.length) return 'Chị vẫn chưa bị thuyết phục. Em tóm tắt lại đúng ba điều chị quan tâm rồi đặt một câu hỏi mới nhé?';
-  const seed = [...normalize(text)].reduce((sum, char) => sum + char.charCodeAt(0), state.turn * 17);
+  const seed = [...normalize(text + customer)].reduce((sum, char) => sum + char.charCodeAt(0), state.turn * 17);
   const reply = unused[seed % Math.min(unused.length, 7)];
   state.usedReplies.push(reply);
   return reply;
@@ -97,7 +159,7 @@ function renderProductCard(p) {
 function startScenario(id) {
   const scenario = scenarios.find(s => s.id === id);
   const productId = state.productId === 'all' ? scenario.productIds[0] : state.productId;
-  state = { view: 'chat', scenario, productId, messages: [{ role: 'customer', text: scenario.customer }], turn: 0, feedback: [], busy: false, usedReplies: [scenario.customer], covered: [] };
+  state = { view: 'chat', scenario, productId, messages: [{ role: 'customer', text: scenario.customer }], turn: 0, feedback: [], busy: false, usedReplies: [scenario.customer], turnScores: [] };
   renderChat();
 }
 
@@ -115,21 +177,25 @@ function renderChat() {
 }
 
 function evaluate(text) {
-  const a = analyzeSeller(text);
+  const a = assessTurn(text);
   const matched = state.scenario.coachKeys.filter(k => normalize(text).includes(normalize(k)));
   const gaps = [];
+  if (a.gibberish) return { good: false, score: a.score, text: 'Câu trả lời không có nội dung bán hàng hoặc quá ngắn để đánh giá.' };
+  if (a.hostile) gaps.push('cách trả lời thiếu chuyên nghiệp và đẩy trách nhiệm sang khách');
+  if (!a.relevant) gaps.push('không trả lời đúng câu khách vừa hỏi');
+  if (a.unsupported) gaps.push('đưa ra cam kết tuyệt đối nhưng không có căn cứ hay điều kiện');
   if (!a.empathy) gaps.push('chưa xác nhận/đồng cảm với ý khách vừa nói');
-  if (!a.questions) gaps.push('chưa có câu hỏi mở để kiểm soát cuộc trò chuyện');
-  if (a.vague) gaps.push('lợi ích còn chung, thiếu bước làm hoặc tiêu chí đo');
+  if (!a.question) gaps.push('chưa có câu hỏi mở để kiểm soát cuộc trò chuyện');
+  if (!a.specific) gaps.push('lợi ích còn chung, thiếu bước làm hoặc tiêu chí đo');
   if (!a.productFit && state.turn > 1) gaps.push(`chưa nối rõ với ${productById(state.productId).name}`);
   if (a.repeated) gaps.push('ý trả lời đang lặp lại nội dung sale đã dùng trước đó');
-  if (!gaps.length || (a.empathy && a.questions && matched.length >= 2)) return { good: true, text: `Đúng hướng ${state.scenario.stage}: có đồng cảm, câu hỏi kiểm soát và bám ${matched.length || 1} điểm của kịch bản. Khách sẽ chuyển sang phản biện sâu hơn.` };
-  return { good: false, text: `${gaps.slice(0, 2).join('; ')}. Lượt tới hãy dùng dữ kiện khách vừa nêu, gắn một lợi ích sản phẩm và hỏi một câu mới.` };
+  if (a.score >= 70) return { good: true, score: a.score, text: `${a.score}/100: trả lời đúng trọng tâm, có cấu trúc và bám ${matched.length || 1} điểm của kịch bản.` };
+  return { good: false, score: a.score, text: `${a.score}/100: ${gaps.slice(0, 3).join('; ')}. Hãy trả lời trực tiếp ý khách trước khi chuyển sang câu hỏi mới.` };
 }
 
 function sendMessage(text) {
   if (!text.trim() || state.busy) return;
-  state.messages.push({ role: 'seller', text: text.trim() }); state.feedback.unshift(evaluate(text)); state.busy = true; renderChat();
+  state.messages.push({ role: 'seller', text: text.trim() }); const result = evaluate(text); state.feedback.unshift(result); state.turnScores.push(result.score); state.busy = true; renderChat();
   setTimeout(() => {
     state.messages.push({ role: 'customer', text: chooseAdaptiveReply(text) });
     state.turn += 1; state.busy = false; renderChat();
@@ -137,13 +203,20 @@ function sendMessage(text) {
 }
 
 function finishSession() {
-  const seller = state.messages.filter(m => m.role === 'seller').map(m => m.text).join(' ').toLowerCase();
+  const sellerTurns = state.messages.filter(m => m.role === 'seller').map(m => m.text);
+  const seller = sellerTurns.join(' ').toLowerCase();
+  const avg = state.turnScores.length ? Math.round(state.turnScores.reduce((a, b) => a + b, 0) / state.turnScores.length) : 0;
+  const badTurns = state.turnScores.filter(s => s < 30).length;
+  const severePenalty = badTurns ? Math.min(35, badTurns * 12) : 0;
+  const empathyRate = sellerTurns.filter(t => /dạ|em hiểu|chia sẻ|cảm ơn/i.test(t)).length / Math.max(1, sellerTurns.length);
+  const questionRate = sellerTurns.filter(t => /\?/.test(t)).length / Math.max(1, sellerTurns.length);
+  const relevanceBase = Math.max(0, avg - severePenalty);
   const metrics = [
-    { name: 'Tạo thiện cảm và kiểm soát', score: /dạ|cảm ơn|hiểu|chia sẻ|tên/.test(seller) ? 88 : 56 },
-    { name: 'Khai thác đúng quy trình', score: Math.min(96, 42 + (seller.match(/\?/g) || []).length * 10 + state.scenario.coachKeys.filter(k => seller.includes(k)).length * 7) },
-    { name: 'Nối sản phẩm vào điểm đau', score: state.turn >= 2 && seller.includes(productById(state.productId).name.toLowerCase().split(' ')[0]) ? 86 : state.turn >= 2 ? 72 : 48 },
-    { name: 'Xử lý từ chối theo CETAA', score: /em hiểu|đồng ý|chia sẻ/.test(seller) && /đúng không|được không|ạ\?/.test(seller) ? 84 : 55 },
-    { name: 'Chốt bước tiếp theo', score: /đăng ký|lịch|gửi|hẹn|giữ chỗ|gọi lại|thanh toán/.test(seller) ? 86 : 48 }
+    { name: 'Trả lời đúng trọng tâm', score: relevanceBase },
+    { name: 'Tạo thiện cảm và kiểm soát', score: Math.max(0, Math.min(relevanceBase, Math.round(empathyRate * 45 + questionRate * 45 + 10) - severePenalty)) },
+    { name: 'Khai thác đúng quy trình', score: Math.max(0, Math.min(relevanceBase + 5, Math.round(questionRate * 55 + state.scenario.coachKeys.filter(k => normalize(seller).includes(normalize(k))).length * 7) - severePenalty)) },
+    { name: 'Nối sản phẩm vào điểm đau', score: Math.max(0, Math.min(relevanceBase + 5, state.turnScores.filter(s => s >= 70).length * 18 + (normalize(seller).includes(normalize(productById(state.productId).name)) ? 20 : 0))) },
+    { name: 'Xử lý từ chối và chốt', score: Math.max(0, Math.min(relevanceBase, (/đăng ký|lịch|gửi|hẹn|giữ chỗ|gọi lại|thanh toán/.test(seller) ? 65 : 25) + Math.round(empathyRate * 20) - severePenalty)) }
   ];
   const score = Math.round(metrics.reduce((a, m) => a + m.score, 0) / metrics.length);
   const result = { id: Date.now(), title: state.scenario.title, product: productById(state.productId).name, score, turns: state.turn, date: new Date().toLocaleDateString('vi-VN'), metrics };
