@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { products, scenarios, takiSteps, type Product, type Scenario } from "./data";
+import { industries, industryForProduct, products, scenarios, takiSteps, type Industry, type Product, type Scenario } from "./data";
 
 type Identity = { id: string; email?: string; name?: string };
 type Profile = { id: string; email: string; displayName: string; team: string; role: "sale" | "admin" };
@@ -29,10 +29,23 @@ const nextStepWords = /(hẹn|gọi|demo|đăng ký|xác nhận|giữ chỗ|bư�
 
 const uid = () => crypto.randomUUID();
 const productName = (id: string) => products.find((item) => item.id === id)?.name ?? id;
+const industryName = (productId: string) => industryForProduct(productId).name;
 const scenarioName = (id: string) => scenarios.find((item) => item.id === id)?.name ?? id;
 const formatDate = (value: string) => new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 
-function correctionFor(text: string, scenario: Scenario, product: Product): Feedback {
+function openingFor(industry: Industry, scenario: Scenario, product: Product) {
+  const openings: Record<Scenario["objection"], string> = {
+    time: `Chị không có nhiều thời gian. Với ${product.name}, em hỏi đúng điều cần biết rồi tư vấn ngắn gọn giúp chị.`,
+    price: industry.priceChallenge,
+    trust: industry.proofChallenge,
+    authority: `Chị chưa phải người quyết định cuối. Em cần đưa dữ kiện gì để chị trao đổi lại với người cùng quyết định?`,
+    fit: `Đừng vội nói ${product.name} phù hợp. Trường hợp của chị là: ${industry.context.toLowerCase()}. Em cần hỏi gì trước?`,
+    competition: industry.comparisonChallenge,
+  };
+  return openings[scenario.objection];
+}
+
+function correctionFor(text: string, scenario: Scenario, product: Product, industry: Industry, lastCustomer: string): Feedback {
   const clean = text.trim();
   const tooShort = clean.length < 24;
   const isNonsense = !clean || nonsense.test(clean);
@@ -40,7 +53,10 @@ function correctionFor(text: string, scenario: Scenario, product: Product): Feed
   const empathizes = empathyWords.test(clean);
   const hasEvidence = evidenceWords.test(clean);
   const hasNextStep = nextStepWords.test(clean);
-  const mentionsNeed = /(mục tiêu|hiện tại|khó|vướng|ưu tiên|doanh thu|quy trình|đội ngũ|thời gian|ngân sách|kết quả)/i.test(clean);
+  const mentionsNeed = /(mục tiêu|hiện tại|khó|vướng|ưu tiên|doanh thu|quy trình|đội ngũ|thời gian|ngân sách|kết quả|nhu cầu|rủi ro|phù hợp)/i.test(clean);
+  const grounded = industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword));
+  const customerTerms = lastCustomer.toLowerCase().split(/[^a-zà-ỹ0-9]+/i).filter((word) => word.length >= 5);
+  const connected = customerTerms.some((word) => clean.toLowerCase().includes(word));
 
   let score = isNonsense ? 4 : 18;
   if (!tooShort) score += 12;
@@ -48,12 +64,16 @@ function correctionFor(text: string, scenario: Scenario, product: Product): Feed
   if (asks) score += 20;
   if (mentionsNeed) score += 16;
   if (hasEvidence) score += 10;
+  if (grounded) score += 10;
+  if (connected) score += 8;
   if (hasNextStep) score += scenario.step >= 7 ? 14 : 5;
   if (clean.length > 360) score -= 12;
+  if (!grounded && !connected) score -= 12;
   score = Math.max(0, Math.min(100, score));
 
   let issue = "Câu trả lời chưa cho thấy bạn đã hiểu đúng nỗi lo và chưa có câu hỏi khai thác cụ thể.";
   if (isNonsense) issue = "Câu trả lời không liên quan đến lời khách; không đủ dữ kiện để tư vấn và không được tính điểm quy trình.";
+  else if (!connected && !grounded) issue = `Bạn chưa trả lời trọng tâm khách vừa hỏi và chưa dùng dữ kiện đặc thù ngành ${industry.name.toLowerCase()}.`;
   else if (!empathizes) issue = "Bạn đi thẳng vào giải pháp trước khi xác nhận nỗi lo của khách.";
   else if (!asks) issue = "Bạn đã ghi nhận nhưng chưa hỏi một câu giúp làm rõ tình trạng thực tế.";
   else if (clean.length > 360) issue = "Câu trả lời quá dài; khách khó tính sẽ cảm thấy bị thuyết trình thay vì được lắng nghe.";
@@ -61,18 +81,18 @@ function correctionFor(text: string, scenario: Scenario, product: Product): Feed
   else if (score >= 75) issue = "Câu trả lời bám tình huống; có thể sắc hơn bằng một dữ kiện đo lường hoặc bước tiếp cụ thể.";
 
   const suggestions: Record<Scenario["objection"], string> = {
-    time: `Dạ em hiểu chị lo học xong vẫn không có thời gian áp dụng. Hiện chị vướng nhất ở lịch tham gia hay ở việc triển khai sau buổi học ạ? Em hỏi để kiểm tra ${product.name} có thật sự phù hợp trước khi tư vấn tiếp.`,
-    price: `Dạ, so sánh chi phí là hoàn toàn hợp lý. Ngoài mức đầu tư, chị đang dùng tiêu chí kết quả nào để chọn chương trình? Nếu chị cho em biết mục tiêu và chi phí của vấn đề hiện tại, em sẽ cùng chị kiểm tra giá trị của ${product.name} thay vì chỉ nói về giá.`,
-    trust: `Em hiểu vì chị đã nghe nhiều lời hứa giống nhau. Chị muốn thấy bằng chứng về kết quả, cách triển khai hay cơ chế hỗ trợ sau học trước? Em sẽ chỉ gửi đúng dữ liệu liên quan đến trường hợp của chị.`,
-    authority: `Dạ, quyết định có thêm cộng sự là hợp lý. Anh/chị ấy quan tâm nhất đến ngân sách, thời gian hay kết quả đầu ra? Mình có thể hẹn 20 phút cùng trao đổi để mọi người có đủ dữ kiện trước khi quyết định.`,
-    fit: `Dạ, quy mô nhỏ càng cần tránh mua một hệ thống quá nặng. Hiện đội chị có bao nhiêu người và điểm nghẽn nào làm mất nhiều thời gian hoặc doanh thu nhất? Em sẽ đối chiếu đúng phần cần dùng của ${product.name}.`,
-    competition: `Dạ, chị nên so sánh kỹ. Ba tiêu chí quan trọng nhất với chị là kết quả, mức độ cầm tay chỉ việc hay hỗ trợ sau chương trình? Khi rõ tiêu chí, em sẽ nói thẳng điểm ${product.name} phù hợp và cả trường hợp không phù hợp.`,
+    time: `Dạ em hiểu chị cần câu trả lời ngắn và đúng trọng tâm. ${industry.diagnosticQuestion} Khi có dữ kiện đó, em sẽ nói thẳng ${product.name} có phù hợp hay không.`,
+    price: `Dạ, so sánh giá là hợp lý. Với nhóm ${industry.name.toLowerCase()}, chị đang ưu tiên ${industry.decisionCriteria}? Em xin làm rõ tiêu chí quan trọng nhất rồi mới phân tích phần chênh của ${product.name}.`,
+    trust: `Em hiểu chị cần bằng chứng chứ không cần lời hứa. Em sẽ cung cấp ${industry.proofDemand}. Trước hết, ${industry.diagnosticQuestion.toLowerCase()}`,
+    authority: `Dạ, mình chưa cần quyết ngay. Người cùng quyết định với chị quan tâm nhất đến ${industry.decisionCriteria}? Em sẽ chuẩn bị đúng dữ kiện và mình hẹn một bước trao đổi cụ thể với đủ người liên quan.`,
+    fit: `Dạ, em chưa thể kết luận phù hợp khi thiếu dữ kiện. ${industry.diagnosticQuestion} Sau đó em sẽ đối chiếu rõ phần ${product.name} đáp ứng được và phần không đáp ứng được.`,
+    competition: `Dạ, chị nên so sánh trên cùng tiêu chí. Mình dùng ${industry.decisionCriteria}; em sẽ chỉ ra điểm khác biệt kiểm chứng được của ${product.name} và trường hợp bên khác phù hợp hơn.`,
   };
 
   return { score, issue, corrected: suggestions[scenario.objection], process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}` };
 }
 
-function customerReply(answer: string, scenario: Scenario, product: Product, turn: number): string {
+function customerReply(answer: string, scenario: Scenario, product: Product, industry: Industry, turn: number): string {
   if (!answer.trim() || nonsense.test(answer.trim())) {
     return [
       "Chị chưa thấy câu đó liên quan đến điều chị vừa hỏi. Em có thể trả lời thẳng vào vấn đề được không?",
@@ -81,56 +101,44 @@ function customerReply(answer: string, scenario: Scenario, product: Product, tur
     ][turn % 3];
   }
 
+  const clean = answer.toLowerCase();
+  if (/(bảo hành|đổi trả|hậu mãi|hỗ trợ sau)/i.test(clean)) return industry.afterSalesChallenge;
+  if (/(giảm|khuyến mãi|giá|chi phí|rẻ)/i.test(clean)) return industry.priceChallenge;
+  if (/(cam kết|bằng chứng|chứng nhận|case|số liệu)/i.test(clean)) return industry.proofChallenge;
+  if (/(so sánh|đối thủ|bên khác)/i.test(clean)) return industry.comparisonChallenge;
+
   const bank: Record<Scenario["objection"], string[]> = {
     time: [
-      "Lịch của chị thay đổi liên tục. Nếu nghỉ một buổi thì bên em xử lý thế nào?",
-      "Hỗ trợ sau học cụ thể trong bao lâu, ai hỗ trợ và phản hồi trong thời gian nào?",
-      "Chị chỉ có khoảng hai giờ mỗi tuần. Em nói thật xem như vậy có làm được không?",
-      "Bên em dựa vào đâu để biết học viên đang áp dụng thật chứ không lại bỏ dở?",
-      "Nếu đội chị không theo kịp tiến độ thì chi phí và phương án tiếp theo là gì?",
+      `Chị đã nói cần nhanh. Với trường hợp ${industry.context.toLowerCase()}, dữ kiện nào em cần nhất để kết luận?`,
+      industry.challenges[0], industry.afterSalesChallenge, industry.challenges[1], industry.challenges[2],
     ],
     price: [
-      `Chị vẫn chưa thấy phần nào của ${product.name} tạo ra giá trị đủ bù chi phí.`,
-      "Nếu sau chương trình kết quả không đạt như kỳ vọng thì bên em chịu trách nhiệm đến đâu?",
-      "Đối thủ rẻ hơn gần một nửa và cũng nói có hỗ trợ. Em so sánh bằng tiêu chí cụ thể đi.",
-      "Em đang nói lợi ích chung. Với tình trạng của chị thì con số nào có thể đo được?",
-      "Chị chưa muốn trả toàn bộ ngay. Có cách nào giảm rủi ro cho quyết định này không?",
+      `Chị vẫn chưa thấy phần nào của ${product.name} tạo ra giá trị đủ bù chi phí.`, industry.priceChallenge, industry.challenges[3], industry.afterSalesChallenge, industry.comparisonChallenge,
     ],
     trust: [
-      "Case đó có giống quy mô và ngành của chị không, hay chỉ là ví dụ đẹp nhất?",
-      "Ai là người trực tiếp hướng dẫn và kinh nghiệm triển khai thực tế của họ là gì?",
-      "Chị muốn xem đầu ra cụ thể, không chỉ feedback cảm tính. Bên em có gì?",
-      "Nếu nội dung không giống như tư vấn ban đầu thì quy trình xử lý thế nào?",
-      "Em đang hứa khá nhiều. Điều gì bên em không thể cam kết cho chị?",
+      industry.proofChallenge, industry.challenges[1], industry.challenges[2], industry.afterSalesChallenge, `Điều gì về ${product.name} bên em không thể cam kết cho chị?`,
     ],
     authority: [
-      "Cộng sự của chị sẽ hỏi lợi tức đầu tư. Em giúp chị trả lời bằng dữ kiện nào?",
-      "Nếu anh ấy không tham gia buổi trao đổi thì em cần chị gửi thông tin gì để đánh giá?",
-      "Ai trong đội cần trực tiếp học và ai chỉ cần theo dõi kết quả?",
-      "Chị chưa muốn bị thúc quyết định. Bước tiếp theo ít rủi ro nhất là gì?",
-      "Nếu cả hai vẫn chưa thống nhất thì bên em có phương án thử hoặc đánh giá trước không?",
+      `Người cùng quyết định sẽ hỏi về ${industry.decisionCriteria}. Em giúp chị trả lời bằng dữ kiện nào?`, industry.proofChallenge, industry.priceChallenge, "Chị chưa muốn bị thúc quyết định. Bước tiếp theo ít rủi ro nhất là gì?", industry.afterSalesChallenge,
     ],
     fit: [
-      "Đội chị chỉ có ba người và chưa dùng CRM. Bắt đầu từ đâu để không quá tải?",
-      "Em đang giả định vấn đề nằm ở công cụ, nhưng nếu do năng lực đội sales thì sao?",
-      "Phần nào có thể áp dụng ngay trong tuần đầu và ai phải chịu trách nhiệm?",
-      "Chị không muốn mua thêm công cụ. Chương trình có tận dụng hệ thống hiện tại không?",
-      "Để kết luận phù hợp, em còn thiếu dữ liệu quan trọng nào về doanh nghiệp chị?",
+      industry.diagnosticQuestion, industry.challenges[0], industry.challenges[2], industry.challenges[4], `Để kết luận ${product.name} phù hợp, em còn thiếu dữ kiện quan trọng nào?`,
     ],
     competition: [
-      "Đừng nói bên em tốt hơn chung chung. Điểm khác biệt nào kiểm chứng được?",
-      "Nếu ưu tiên của chị là triển khai nhanh thì bên nào có lợi thế và vì sao?",
-      "Bên kia cho học thử. Bên em giảm rủi ro cho chị bằng cách nào?",
-      "Có trường hợp nào chị nên chọn đối thủ thay vì chọn bên em không?",
-      "Em hãy giúp chị lập ba tiêu chí để tự ra quyết định, không cần chốt ngay.",
+      industry.comparisonChallenge, industry.proofChallenge, industry.priceChallenge, `Có trường hợp nào chị không nên chọn ${product.name} không?`, `Em giúp chị tự chấm theo ${industry.decisionCriteria}; đừng vội chốt.`,
     ],
   };
-  return bank[scenario.objection][turn % bank[scenario.objection].length];
+  const reply = bank[scenario.objection][turn % bank[scenario.objection].length];
+  if (questionWords.test(answer) || answer.includes("?")) {
+    return `Thông tin của chị là: ${industry.context}. Nhưng ${reply.charAt(0).toLowerCase()}${reply.slice(1)}`;
+  }
+  return reply;
 }
 
 export default function TrainingPortal({ identity, isAdmin }: { identity: Identity; isAdmin: boolean }) {
   const [profile, setProfile] = useState<Profile | null | undefined>(undefined);
   const [tab, setTab] = useState<"train" | "history" | "admin">("train");
+  const [industryId, setIndustryId] = useState(industries[0].id);
   const [productId, setProductId] = useState(products[0].id);
   const [scenarioId, setScenarioId] = useState(scenarios[0].id);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -142,7 +150,9 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   const [busy, setBusy] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
-  const product = useMemo(() => products.find((item) => item.id === productId) ?? products[0], [productId]);
+  const industry = useMemo(() => industries.find((item) => item.id === industryId) ?? industries[0], [industryId]);
+  const availableProducts = useMemo(() => products.filter((item) => item.industryId === industry.id), [industry]);
+  const product = useMemo(() => products.find((item) => item.id === productId) ?? availableProducts[0] ?? products[0], [productId, availableProducts]);
   const scenario = useMemo(() => scenarios.find((item) => item.id === scenarioId) ?? scenarios[0], [scenarioId]);
   const saleMessages = messages.filter((message) => message.role === "sale");
   const score = saleMessages.length ? Math.round(saleMessages.reduce((sum, item) => sum + (item.feedback?.score ?? 0), 0) / saleMessages.length) : 0;
@@ -154,7 +164,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   function startTraining() {
-    setMessages([{ id: uid(), role: "customer", text: scenario.opening }]);
+    setMessages([{ id: uid(), role: "customer", text: openingFor(industry, scenario, product) }]);
     setSaved(false);
     setTab("train");
   }
@@ -163,12 +173,13 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
     event.preventDefault();
     const text = draft.trim();
     if (!text || saved) return;
-    const feedback = correctionFor(text, scenario, product);
+    const lastCustomer = [...messages].reverse().find((message) => message.role === "customer")?.text ?? "";
+    const feedback = correctionFor(text, scenario, product, industry, lastCustomer);
     const turn = saleMessages.length;
     setMessages((current) => [
       ...current,
       { id: uid(), role: "sale", text, feedback },
-      { id: uid(), role: "customer", text: customerReply(text, scenario, product, turn) },
+      { id: uid(), role: "customer", text: customerReply(text, scenario, product, industry, turn) },
     ]);
     setDraft("");
   }
@@ -202,7 +213,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark small">T</span><div><strong>TAKI Sales Lab</strong><small>Huấn luyện tư vấn theo quy trình</small></div></div>
+        <div className="brand"><span className="brand-mark small">S</span><div><strong>Sales Lab Đa Ngành</strong><small>Khách hàng AI khó tính · TAKI</small></div></div>
         <nav className="tabs" aria-label="Điều hướng">
           <button className={tab === "train" ? "active" : ""} onClick={() => setTab("train")}>Luyện tập</button>
           <button className={tab === "history" ? "active" : ""} onClick={() => loadHistory("history")}>Lịch sử của tôi</button>
@@ -215,18 +226,21 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
         <section className="workspace">
           <aside className="control-panel card">
             <p className="eyebrow">THIẾT LẬP PHIÊN LUYỆN</p>
-            <label>Sản phẩm<select value={productId} onChange={(e) => setProductId(e.target.value)}>{products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-            <label>Tình huống<select value={scenarioId} onChange={(e) => setScenarioId(e.target.value)}>{scenarios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Ngành hàng<select value={industryId} onChange={(e) => { const next = e.target.value; setIndustryId(next); setProductId(products.find((item) => item.industryId === next)?.id ?? products[0].id); setMessages([]); setSaved(false); }}>{industries.map((item) => <option key={item.id} value={item.id}>{item.icon} {item.name}</option>)}</select></label>
+            <label>Sản phẩm / dịch vụ<select value={product.id} onChange={(e) => { setProductId(e.target.value); setMessages([]); setSaved(false); }}>{availableProducts.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label>Tình huống<select value={scenarioId} onChange={(e) => { setScenarioId(e.target.value); setMessages([]); setSaved(false); }}>{scenarios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <div className="industry-badge"><span>{industry.icon}</span><div><strong>{industry.name}</strong><small>{industry.persona}</small></div></div>
             <div className="context-box"><strong>{product.name}</strong><span>{product.promise}</span><small>{product.category} · {product.price}</small></div>
+            <div className="context-box challenge"><strong>Khách sẽ soi kỹ</strong><span>{industry.decisionCriteria}</span><small>Bối cảnh: {industry.context}</small></div>
             <div className="context-box amber"><strong>Mục tiêu huấn luyện</strong><span>{scenario.goal}</span><small>Bám {takiSteps[scenario.step - 1]}</small></div>
             <button className="primary-button" onClick={startTraining}>{messages.length ? "Bắt đầu phiên mới" : "Bắt đầu luyện"}</button>
             {messages.length > 0 && <button className="secondary-button" disabled={!saleMessages.length || busy} onClick={finishSession}>{saved ? "Đã lưu phiên" : busy ? "Đang lưu…" : "Kết thúc & lưu điểm"}</button>}
           </aside>
 
           <section className="chat-card card">
-            <div className="chat-head"><div><p className="eyebrow">KHÁCH HÀNG AI · KHÓ TÍNH</p><h1>{scenario.name}</h1></div><div className="live-score"><span>Điểm hiện tại</span><strong>{score}</strong></div></div>
+            <div className="chat-head"><div><p className="eyebrow">{industry.name.toUpperCase()} · KHÁCH HÀNG AI KHÓ TÍNH</p><h1>{scenario.name}</h1></div><div className="live-score"><span>Điểm hiện tại</span><strong>{score}</strong></div></div>
             <div className="chat-stream">
-              {!messages.length && <div className="empty-state"><span>💬</span><h2>Sẵn sàng cho một khách hàng không dễ tính?</h2><p>AI sẽ bám trực tiếp vào câu trả lời của sale. Sau mỗi câu, hệ thống chấm và chữa ngay theo quy trình TAKI.</p></div>}
+              {!messages.length && <div className="empty-state"><span>{industry.icon}</span><h2>Khách {industry.name.toLowerCase()} sẽ không dễ thuyết phục</h2><p>{industry.persona}. AI sẽ bám trực tiếp vào từng câu sale nói, hỏi sâu và chữa bài ngay theo quy trình TAKI.</p></div>}
               {messages.map((message) => <ChatMessage key={message.id} message={message} />)}
               <div ref={chatEnd} />
             </div>
@@ -256,7 +270,7 @@ function Registration({ identity, onComplete }: { identity: Identity; onComplete
     if (response.ok) onComplete(data.profile);
   }
 
-  return <main className="login-shell"><form className="login-card registration" onSubmit={register}><div className="brand-mark">T</div><p className="eyebrow">HOÀN TẤT ĐĂNG KÝ</p><h1>Chào mừng đến TAKI Sales Lab</h1><p className="login-copy">Nhập thông tin ngắn gọn để điểm và lịch sử được ghi đúng theo từng thành viên.</p><label>Họ và tên<input value={displayName} onChange={(e) => setDisplayName(e.target.value)} minLength={2} maxLength={80} required /></label><label>Đội / phòng ban<input value={team} onChange={(e) => setTeam(e.target.value)} minLength={2} maxLength={80} required /></label><button className="primary-button" disabled={busy}>{busy ? "Đang tạo tài khoản…" : "Bắt đầu luyện"}</button></form></main>;
+  return <main className="login-shell"><form className="login-card registration" onSubmit={register}><div className="brand-mark">S</div><p className="eyebrow">HOÀN TẤT ĐĂNG KÝ</p><h1>Chào mừng đến Sales Lab Đa Ngành</h1><p className="login-copy">Nhập thông tin ngắn gọn để điểm và lịch sử được ghi đúng theo từng thành viên.</p><label>Họ và tên<input value={displayName} onChange={(e) => setDisplayName(e.target.value)} minLength={2} maxLength={80} required /></label><label>Đội / phòng ban<input value={team} onChange={(e) => setTeam(e.target.value)} minLength={2} maxLength={80} required /></label><button className="primary-button" disabled={busy}>{busy ? "Đang tạo tài khoản…" : "Bắt đầu luyện"}</button></form></main>;
 }
 
 function ChatMessage({ message }: { message: Message }) {
@@ -268,7 +282,7 @@ function SessionList({ title, sessions, expanded, setExpanded }: { title: string
 }
 
 function SessionCard({ session, open, onToggle, admin = false }: { session: SavedSession; open: boolean; onToggle: () => void; admin?: boolean }) {
-  return <article className="session-card card"><button className="session-summary" onClick={onToggle}><div><strong>{admin ? `${session.displayName} · ${session.team}` : scenarioName(session.scenarioId)}</strong><span>{productName(session.productId)} · {formatDate(session.createdAt)}</span></div><div className={`score-pill ${session.score < 50 ? "low" : ""}`}>{session.score}/100</div></button>{open && <div className="session-detail"><div className="metric-grid">{Object.entries(session.metrics).map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}/100</strong></div>)}</div><div className="transcript-review">{session.transcript.map((message) => <ChatMessage key={message.id} message={message} />)}</div></div>}</article>;
+  return <article className="session-card card"><button className="session-summary" onClick={onToggle}><div><strong>{admin ? `${session.displayName} · ${session.team}` : scenarioName(session.scenarioId)}</strong><span>{industryName(session.productId)} · {productName(session.productId)} · {formatDate(session.createdAt)}</span></div><div className={`score-pill ${session.score < 50 ? "low" : ""}`}>{session.score}/100</div></button>{open && <div className="session-detail"><div className="metric-grid">{Object.entries(session.metrics).map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}/100</strong></div>)}</div><div className="transcript-review">{session.transcript.map((message) => <ChatMessage key={message.id} message={message} />)}</div></div>}</article>;
 }
 
 function AdminDashboard({ sessions, expanded, setExpanded }: { sessions: SavedSession[]; expanded: string | null; setExpanded: (id: string | null) => void }) {

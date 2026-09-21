@@ -11,11 +11,11 @@ export default async function Home() {
     return (
       <main className="login-shell">
         <section className="login-card">
-          <div className="brand-mark">T</div>
-          <p className="eyebrow">TAKI SALES LAB</p>
-          <h1>Luyện tư vấn với khách hàng AI khó tính</h1>
+          <div className="brand-mark">S</div>
+          <p className="eyebrow">SALES LAB ĐA NGÀNH · TAKI</p>
+          <h1>Luyện sales với khách hàng AI khó tính</h1>
           <p className="login-copy">
-            Đăng nhập để lưu điểm, lịch sử hội thoại và nhận chữa bài ngay sau từng câu trả lời.
+            Thực chiến 13 ngành hàng, lưu điểm, lịch sử hội thoại và nhận chữa bài ngay sau từng câu trả lời.
           </p>
           <a className="primary-button login-button" href={chatGPTSignInPath("/")} target="_top">
             Đăng nhập bằng ChatGPT

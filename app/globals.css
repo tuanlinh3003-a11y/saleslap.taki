@@ -43,6 +43,9 @@ input:focus,select:focus,textarea:focus { border-color:#6ea7f2; box-shadow:0 0 0
 .control-panel { padding:22px; overflow:auto; }
 .context-box { display:grid; gap:7px; margin:16px 0; padding:15px; border-radius:14px; color:#19468a; background:#edf5ff; }
 .context-box span { color:#385a88; font-size:13px; line-height:1.45; }.context-box small { color:#6881a5; }.context-box.amber { color:#74470a; background:#fff7e7; }.context-box.amber span { color:#735b38; }
+.context-box.challenge { color:#5a318e; background:#f5efff; }.context-box.challenge span { color:#654c82; }.context-box.challenge small { color:#806a99; line-height:1.4; }
+.industry-badge { display:flex; align-items:flex-start; gap:12px; margin:17px 0 4px; padding:13px 14px; border:1px solid #d8e5f6; border-radius:14px; background:linear-gradient(135deg,#f8fbff,#edf5ff); }
+.industry-badge>span { font-size:25px; line-height:1; }.industry-badge div { display:grid; gap:4px; }.industry-badge strong { color:#173c73; }.industry-badge small { color:#667b99; line-height:1.35; }
 .chat-card { display:grid; grid-template-rows:auto 1fr auto; min-width:0; overflow:hidden; }
 .chat-head { display:flex; align-items:center; justify-content:space-between; padding:20px 24px; border-bottom:1px solid var(--line); }
 .chat-head h1,.section-head h1 { margin:0; font-size:25px; letter-spacing:-.025em; }
