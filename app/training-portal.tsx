@@ -33,6 +33,46 @@ const industryName = (productId: string) => industryForProduct(productId).name;
 const scenarioName = (id: string) => scenarios.find((item) => item.id === id)?.name ?? id;
 const formatDate = (value: string) => new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
 
+const sectorSignals: Record<string, RegExp> = {
+  fashion: /(size|form|dáng|vai|eo|vòng ngực|số đo|vải|màu|chiều cao|cân nặng)/i,
+  accessories: /(phụ kiện|trang sức|nhẫn|vòng|dây chuyền|cổ tay|ngón tay|chất liệu|dị ứng|xuống màu|khóa|làm quà)/i,
+  beauty: /(da|mụn|nám|routine|hoạt chất|retinol|kích ứng|thành phần|serum|mỹ phẩm)/i,
+  food: /(ăn|uống|khẩu phần|calo|đạm|đường|dinh dưỡng|dị ứng|hạn dùng|bảo quản)/i,
+  "home-appliances": /(diện tích|công suất|độ ồn|điện|vệ sinh|bộ lọc|linh kiện|gia dụng)/i,
+  technology: /(cấu hình|ram|chip|pin|phần mềm|dữ liệu|camera|bộ nhớ|bảo mật|công nghệ)/i,
+  education: /(mục tiêu học|khóa học|lộ trình|giảng viên|bài tập|trình độ|đầu ra|chuyển nghề|portfolio)/i,
+  travel: /(chuyến đi|phòng|khách sạn|tour|vé|lịch trình|hoàn hủy|trẻ em|người lớn tuổi)/i,
+  "real-estate": /(căn hộ|pháp lý|sổ|vay|lãi suất|dòng tiền|bàn giao|thanh khoản|mét vuông)/i,
+  healthcare: /(triệu chứng|bệnh|thuốc|bác sĩ|xét nghiệm|điều trị|sức khỏe|bệnh nền|chỉ định)/i,
+  spa: /(liệu trình|phác đồ|laser|thẩm mỹ|thiết bị|chống chỉ định|hồi phục)/i,
+  interior: /(mặt bằng|nội thất|tủ|bếp|sofa|bản vẽ|boq|thi công|kích thước)/i,
+  "building-materials": /(công trình|vật tư|gạch|chống thấm|định mức|lô|co\/cq|nghiệm thu|hao hụt)/i,
+};
+
+function contextMismatch(text: string, industry: Industry, product: Product, customer: CustomerInsight) {
+  const clean = text.toLowerCase();
+  const naturalNeed = customer.need.replace(/^chị (cần|muốn)\s*/i, "");
+  const bodyStats = /(cao bao nhiêu|chiều cao|nặng bao nhiêu|cân nặng|bao nhiêu kg|mấy kg)/i.test(clean);
+  const bodyStatsRelevant = ["fashion", "food", "healthcare", "spa"].includes(industry.id);
+  if (bodyStats && !bodyStatsRelevant) {
+    return {
+      issue: `Câu hỏi về chiều cao/cân nặng không giúp xử lý nhu cầu ${industry.name.toLowerCase()} hiện tại của khách.`,
+      reply: `Khoan, em hỏi chiều cao với cân nặng để làm gì vậy? Chị đang muốn ${naturalNeed}. Nếu cần chọn ${product.name}, em hỏi đúng về ${industry.decisionCriteria} giúp chị nhé.`,
+    };
+  }
+
+  const ownTopic = sectorSignals[industry.id]?.test(clean) ?? false;
+  const foreignTopic = Object.entries(sectorSignals).find(([id, pattern]) => id !== industry.id && pattern.test(clean));
+  const usefulGeneric = /(mục tiêu|mong muốn|ưu tiên|ngân sách|thời gian|từng dùng|từng mua|trước đây|ai quyết|lo nhất|băn khoăn)/i.test(clean);
+  if (!ownTopic && foreignTopic && !usefulGeneric) {
+    return {
+      issue: `Câu hỏi đang đi sang chủ đề của ngành khác, không liên quan tới nhu cầu ${industry.name.toLowerCase()} khách vừa nêu.`,
+      reply: `Câu đó liên quan gì tới ${product.name} vậy em? Chị đang muốn ${naturalNeed}, em hỏi lại đúng phần đó giúp chị.`,
+    };
+  }
+  return null;
+}
+
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
 
 export function openingFor(industry: Industry, scenario: Scenario, product: Product, customer: CustomerInsight) {
@@ -47,7 +87,7 @@ export function openingFor(industry: Industry, scenario: Scenario, product: Prod
   return openings[scenario.objection];
 }
 
-function correctionFor(text: string, scenario: Scenario, product: Product, industry: Industry, lastCustomer: string): Feedback {
+export function correctionFor(text: string, scenario: Scenario, product: Product, industry: Industry, customer: CustomerInsight, lastCustomer: string): Feedback {
   const clean = text.trim();
   const tooShort = clean.length < 24;
   const isNonsense = !clean || nonsense.test(clean);
@@ -59,6 +99,7 @@ function correctionFor(text: string, scenario: Scenario, product: Product, indus
   const grounded = industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword));
   const customerTerms = lastCustomer.toLowerCase().split(/[^a-zà-ỹ0-9]+/i).filter((word) => word.length >= 5);
   const connected = customerTerms.some((word) => clean.toLowerCase().includes(word));
+  const mismatch = contextMismatch(clean, industry, product, customer);
 
   let score = isNonsense ? 4 : 18;
   if (!tooShort) score += 12;
@@ -71,10 +112,12 @@ function correctionFor(text: string, scenario: Scenario, product: Product, indus
   if (hasNextStep) score += scenario.step >= 7 ? 14 : 5;
   if (clean.length > 360) score -= 12;
   if (!grounded && !connected) score -= 12;
+  if (mismatch) score = Math.min(score, 12);
   score = Math.max(0, Math.min(100, score));
 
   let issue = "Câu trả lời chưa cho thấy bạn đã hiểu đúng nỗi lo và chưa có câu hỏi khai thác cụ thể.";
   if (isNonsense) issue = "Câu trả lời không liên quan đến lời khách; không đủ dữ kiện để tư vấn và không được tính điểm quy trình.";
+  else if (mismatch) issue = mismatch.issue;
   else if (!connected && !grounded) issue = `Bạn chưa trả lời trọng tâm khách vừa hỏi và chưa dùng dữ kiện đặc thù ngành ${industry.name.toLowerCase()}.`;
   else if (!empathizes) issue = "Bạn đi thẳng vào giải pháp trước khi xác nhận nỗi lo của khách.";
   else if (!asks) issue = "Bạn đã ghi nhận nhưng chưa hỏi một câu giúp làm rõ tình trạng thực tế.";
@@ -91,7 +134,8 @@ function correctionFor(text: string, scenario: Scenario, product: Product, indus
     competition: `Dạ, chị nên so sánh trên cùng tiêu chí. Mình dùng ${industry.decisionCriteria}; em sẽ chỉ ra điểm khác biệt kiểm chứng được của ${product.name} và trường hợp bên khác phù hợp hơn.`,
   };
 
-  return { score, issue, corrected: suggestions[scenario.objection], process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}` };
+  const corrected = mismatch ? `Dạ em xin lỗi, câu vừa rồi không liên quan đến điều chị cần. ${industry.diagnosticQuestion}` : suggestions[scenario.objection];
+  return { score, issue, corrected, process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}` };
 }
 
 function askedFacts(answer: string, customer: CustomerInsight) {
@@ -121,6 +165,9 @@ export function customerReply(answer: string, scenario: Scenario, product: Produ
       "Câu vừa rồi chưa giúp chị có thêm dữ kiện nào để quyết định cả.",
     ][turn % 3];
   }
+
+  const mismatch = contextMismatch(answer, industry, product, customer);
+  if (mismatch) return mismatch.reply;
 
   const clean = answer.toLowerCase();
   const asked = clean.includes("?") || questionWords.test(clean);
@@ -213,7 +260,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
     const text = draft.trim();
     if (!text || saved) return;
     const lastCustomer = [...messages].reverse().find((message) => message.role === "customer")?.text ?? "";
-    const feedback = correctionFor(text, scenario, product, industry, lastCustomer);
+    const feedback = correctionFor(text, scenario, product, industry, customer, lastCustomer);
     const turn = saleMessages.length;
     setMessages((current) => [
       ...current,
