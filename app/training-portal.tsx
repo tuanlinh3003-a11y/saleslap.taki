@@ -94,19 +94,21 @@ function correctionFor(text: string, scenario: Scenario, product: Product, indus
   return { score, issue, corrected: suggestions[scenario.objection], process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}` };
 }
 
-function askedFact(answer: string, customer: CustomerInsight) {
+function askedFacts(answer: string, customer: CustomerInsight) {
   const clean = answer.toLowerCase();
-  if (/(giá|ngân sách|chi phí|đầu tư|bao nhiêu)/i.test(clean)) return customer.budget;
-  if (/(khi nào|bao giờ|thời gian|gấp|ngày|tuần|tháng)/i.test(clean)) return customer.timing;
-  if (/(từng|trước đây|đã dùng|đã mua|kinh nghiệm|lần trước)/i.test(clean)) return customer.past;
-  if (/(ai quyết|người quyết|chồng|vợ|gia đình|sếp|phê duyệt)/i.test(clean)) return customer.decision;
-  if (/(lo|ngại|sợ|rủi ro|băn khoăn)/i.test(clean)) return customer.fear;
-  if (/(mục tiêu|mong muốn|ưu tiên|cần|nhu cầu)/i.test(clean)) return customer.need;
-  return customer.situation;
+  const facts: string[] = [];
+  if (/(mục tiêu|mong muốn|ưu tiên|nhu cầu)/i.test(clean)) facts.push(customer.need);
+  if (/(khi nào|bao giờ|thời gian|rảnh|gấp|ngày|tuần|tháng)/i.test(clean)) facts.push(customer.timing);
+  if (/(từng|trước đây|đã dùng|đã mua|đã học|kinh nghiệm|lần trước)/i.test(clean)) facts.push(customer.past);
+  if (/(giá|ngân sách|chi phí|đầu tư|học phí|mức tiền)/i.test(clean)) facts.push(customer.budget);
+  if (/(ai quyết|người quyết|chồng|vợ|gia đình|sếp|phê duyệt)/i.test(clean)) facts.push(customer.decision);
+  if (/(lo|ngại|sợ|rủi ro|băn khoăn)/i.test(clean)) facts.push(customer.fear);
+  const unique = [...new Set(facts)];
+  return unique.length ? unique.slice(0, 3).map((fact) => fact.charAt(0).toUpperCase() + fact.slice(1)).join(". ") : customer.situation;
 }
 
 function pickFresh(candidates: string[], previousCustomer: string[], turn: number) {
-  const fresh = candidates.filter((item) => !previousCustomer.includes(item));
+  const fresh = candidates.filter((item) => !previousCustomer.some((message) => message.includes(item)));
   const pool = fresh.length ? fresh : candidates;
   return pool[turn % pool.length];
 }
@@ -158,7 +160,7 @@ export function customerReply(answer: string, scenario: Scenario, product: Produ
   const challenge = pickFresh(reactive, previousCustomer, turn);
   if (!asked) return challenge;
 
-  const fact = askedFact(answer, customer);
+  const fact = askedFacts(answer, customer);
   const bridges: Record<CustomerInsight["voice"], string[]> = {
     direct: ["Còn một điểm chị muốn hỏi rõ.", "Nhưng chị cần em nói thẳng chỗ này.", "Được, vậy còn chuyện này."],
     cautious: ["Chị hiểu. Nhưng chị vẫn hơi lo một việc.", "Ừ, đúng tình trạng của chị. Chị hỏi thêm nhé.", "Vậy thì em làm rõ giúp chị một việc."],
