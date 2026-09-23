@@ -5,8 +5,9 @@ import { customerInsights, industries, industryForProduct, products, scenarios, 
 
 type Identity = { id: string; email?: string; name?: string };
 type Profile = { id: string; email: string; displayName: string; team: string; role: "sale" | "admin" };
-type Feedback = { score: number; issue: string; corrected: string; process: string };
+type Feedback = { score: number; issue: string; corrected: string; process: string; metrics?: Record<string, number> };
 type Message = { id: string; role: "customer" | "sale"; text: string; feedback?: Feedback };
+type TurnResponse = { customerMessage?: string; feedback?: Feedback; error?: string };
 type SavedSession = {
   id: string;
   displayName?: string;
@@ -21,57 +22,14 @@ type SavedSession = {
   createdAt: string;
 };
 
-const nonsense = /^(ok|ừ|uh|uk|haha|hihi|không biết|chịu|asdf|test|abc|123|gì vậy|linh tinh)[.!?\s]*$/i;
 const questionWords = /(ạ|không|chưa|nào|bao nhiêu|vì sao|điều gì|khi nào|ai |chị có|chị đang|chị muốn)/i;
 const empathyWords = /(em hiểu|em ghi nhận|em đồng ý|đúng là|chị đang lo|chị băn khoăn|tiếc là|cảm ơn chị)/i;
-const evidenceWords = /(ví dụ|case|kết quả|số liệu|cam kết|lộ trình|thực tế|đã áp dụng|đo lường)/i;
-const nextStepWords = /(hẹn|gọi|demo|đăng ký|xác nhận|giữ chỗ|bước tiếp|thời gian nào|ngày nào)/i;
 
 const uid = () => crypto.randomUUID();
 const productName = (id: string) => products.find((item) => item.id === id)?.name ?? id;
 const industryName = (productId: string) => industryForProduct(productId).name;
 const scenarioName = (id: string) => scenarios.find((item) => item.id === id)?.name ?? id;
 const formatDate = (value: string) => new Intl.DateTimeFormat("vi-VN", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
-
-const sectorSignals: Record<string, RegExp> = {
-  fashion: /(size|form|dáng|vai|eo|vòng ngực|số đo|vải|màu|chiều cao|cân nặng)/i,
-  accessories: /(phụ kiện|trang sức|nhẫn|vòng|dây chuyền|cổ tay|ngón tay|chất liệu|dị ứng|xuống màu|khóa|làm quà)/i,
-  beauty: /(da|mụn|nám|routine|hoạt chất|retinol|kích ứng|thành phần|serum|mỹ phẩm)/i,
-  food: /(ăn|uống|khẩu phần|calo|đạm|đường|dinh dưỡng|dị ứng|hạn dùng|bảo quản)/i,
-  "home-appliances": /(diện tích|công suất|độ ồn|điện|vệ sinh|bộ lọc|linh kiện|gia dụng)/i,
-  technology: /(cấu hình|ram|chip|pin|phần mềm|dữ liệu|camera|bộ nhớ|bảo mật|công nghệ)/i,
-  education: /(mục tiêu học|khóa học|lộ trình|giảng viên|bài tập|trình độ|đầu ra|chuyển nghề|portfolio)/i,
-  travel: /(chuyến đi|phòng|khách sạn|tour|vé|lịch trình|hoàn hủy|trẻ em|người lớn tuổi)/i,
-  "real-estate": /(căn hộ|pháp lý|sổ|vay|lãi suất|dòng tiền|bàn giao|thanh khoản|mét vuông)/i,
-  healthcare: /(triệu chứng|bệnh|thuốc|bác sĩ|xét nghiệm|điều trị|sức khỏe|bệnh nền|chỉ định)/i,
-  spa: /(liệu trình|phác đồ|laser|thẩm mỹ|thiết bị|chống chỉ định|hồi phục)/i,
-  interior: /(mặt bằng|nội thất|tủ|bếp|sofa|bản vẽ|boq|thi công|kích thước)/i,
-  "building-materials": /(công trình|vật tư|gạch|chống thấm|định mức|lô|co\/cq|nghiệm thu|hao hụt)/i,
-};
-
-function contextMismatch(text: string, industry: Industry, product: Product, customer: CustomerInsight) {
-  const clean = text.toLowerCase();
-  const naturalNeed = customer.need.replace(/^chị (cần|muốn)\s*/i, "");
-  const bodyStats = /(cao bao nhiêu|chiều cao|nặng bao nhiêu|cân nặng|bao nhiêu kg|mấy kg)/i.test(clean);
-  const bodyStatsRelevant = ["fashion", "food", "healthcare", "spa"].includes(industry.id);
-  if (bodyStats && !bodyStatsRelevant) {
-    return {
-      issue: `Câu hỏi về chiều cao/cân nặng không giúp xử lý nhu cầu ${industry.name.toLowerCase()} hiện tại của khách.`,
-      reply: `Khoan, em hỏi chiều cao với cân nặng để làm gì vậy? Chị đang muốn ${naturalNeed}. Nếu cần chọn ${product.name}, em hỏi đúng về ${industry.decisionCriteria} giúp chị nhé.`,
-    };
-  }
-
-  const ownTopic = sectorSignals[industry.id]?.test(clean) ?? false;
-  const foreignTopic = Object.entries(sectorSignals).find(([id, pattern]) => id !== industry.id && pattern.test(clean));
-  const usefulGeneric = /(mục tiêu|mong muốn|ưu tiên|ngân sách|thời gian|từng dùng|từng mua|trước đây|ai quyết|lo nhất|băn khoăn)/i.test(clean);
-  if (!ownTopic && foreignTopic && !usefulGeneric) {
-    return {
-      issue: `Câu hỏi đang đi sang chủ đề của ngành khác, không liên quan tới nhu cầu ${industry.name.toLowerCase()} khách vừa nêu.`,
-      reply: `Câu đó liên quan gì tới ${product.name} vậy em? Chị đang muốn ${naturalNeed}, em hỏi lại đúng phần đó giúp chị.`,
-    };
-  }
-  return null;
-}
 
 const lowerFirst = (text: string) => text.charAt(0).toLowerCase() + text.slice(1);
 
@@ -85,137 +43,6 @@ export function openingFor(industry: Industry, scenario: Scenario, product: Prod
     competition: `Chị đang xem thêm hai bên khác nữa. ${industry.comparisonChallenge}`,
   };
   return openings[scenario.objection];
-}
-
-export function correctionFor(text: string, scenario: Scenario, product: Product, industry: Industry, customer: CustomerInsight, lastCustomer: string): Feedback {
-  const clean = text.trim();
-  const tooShort = clean.length < 24;
-  const isNonsense = !clean || nonsense.test(clean);
-  const asks = questionWords.test(clean) || clean.includes("?");
-  const empathizes = empathyWords.test(clean);
-  const hasEvidence = evidenceWords.test(clean);
-  const hasNextStep = nextStepWords.test(clean);
-  const mentionsNeed = /(mục tiêu|hiện tại|khó|vướng|ưu tiên|doanh thu|quy trình|đội ngũ|thời gian|ngân sách|kết quả|nhu cầu|rủi ro|phù hợp)/i.test(clean);
-  const grounded = industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword));
-  const customerTerms = lastCustomer.toLowerCase().split(/[^a-zà-ỹ0-9]+/i).filter((word) => word.length >= 5);
-  const connected = customerTerms.some((word) => clean.toLowerCase().includes(word));
-  const mismatch = contextMismatch(clean, industry, product, customer);
-
-  let score = isNonsense ? 4 : 18;
-  if (!tooShort) score += 12;
-  if (empathizes) score += 18;
-  if (asks) score += 20;
-  if (mentionsNeed) score += 16;
-  if (hasEvidence) score += 10;
-  if (grounded) score += 10;
-  if (connected) score += 8;
-  if (hasNextStep) score += scenario.step >= 7 ? 14 : 5;
-  if (clean.length > 360) score -= 12;
-  if (!grounded && !connected) score -= 12;
-  if (mismatch) score = Math.min(score, 12);
-  score = Math.max(0, Math.min(100, score));
-
-  let issue = "Câu trả lời chưa cho thấy bạn đã hiểu đúng nỗi lo và chưa có câu hỏi khai thác cụ thể.";
-  if (isNonsense) issue = "Câu trả lời không liên quan đến lời khách; không đủ dữ kiện để tư vấn và không được tính điểm quy trình.";
-  else if (mismatch) issue = mismatch.issue;
-  else if (!connected && !grounded) issue = `Bạn chưa trả lời trọng tâm khách vừa hỏi và chưa dùng dữ kiện đặc thù ngành ${industry.name.toLowerCase()}.`;
-  else if (!empathizes) issue = "Bạn đi thẳng vào giải pháp trước khi xác nhận nỗi lo của khách.";
-  else if (!asks) issue = "Bạn đã ghi nhận nhưng chưa hỏi một câu giúp làm rõ tình trạng thực tế.";
-  else if (clean.length > 360) issue = "Câu trả lời quá dài; khách khó tính sẽ cảm thấy bị thuyết trình thay vì được lắng nghe.";
-  else if (scenario.step >= 7 && !hasNextStep) issue = "Lập luận đã khá hơn nhưng chưa chốt một hành động hoặc mốc thời gian rõ ràng.";
-  else if (score >= 75) issue = "Câu trả lời bám tình huống; có thể sắc hơn bằng một dữ kiện đo lường hoặc bước tiếp cụ thể.";
-
-  const suggestions: Record<Scenario["objection"], string> = {
-    time: `Dạ em hiểu chị cần câu trả lời ngắn và đúng trọng tâm. ${industry.diagnosticQuestion} Khi có dữ kiện đó, em sẽ nói thẳng ${product.name} có phù hợp hay không.`,
-    price: `Dạ, so sánh giá là hợp lý. Với nhóm ${industry.name.toLowerCase()}, chị đang ưu tiên ${industry.decisionCriteria}? Em xin làm rõ tiêu chí quan trọng nhất rồi mới phân tích phần chênh của ${product.name}.`,
-    trust: `Em hiểu chị cần bằng chứng chứ không cần lời hứa. Em sẽ cung cấp ${industry.proofDemand}. Trước hết, ${industry.diagnosticQuestion.toLowerCase()}`,
-    authority: `Dạ, mình chưa cần quyết ngay. Người cùng quyết định với chị quan tâm nhất đến ${industry.decisionCriteria}? Em sẽ chuẩn bị đúng dữ kiện và mình hẹn một bước trao đổi cụ thể với đủ người liên quan.`,
-    fit: `Dạ, em chưa thể kết luận phù hợp khi thiếu dữ kiện. ${industry.diagnosticQuestion} Sau đó em sẽ đối chiếu rõ phần ${product.name} đáp ứng được và phần không đáp ứng được.`,
-    competition: `Dạ, chị nên so sánh trên cùng tiêu chí. Mình dùng ${industry.decisionCriteria}; em sẽ chỉ ra điểm khác biệt kiểm chứng được của ${product.name} và trường hợp bên khác phù hợp hơn.`,
-  };
-
-  const corrected = mismatch ? `Dạ em xin lỗi, câu vừa rồi không liên quan đến điều chị cần. ${industry.diagnosticQuestion}` : suggestions[scenario.objection];
-  return { score, issue, corrected, process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}` };
-}
-
-function askedFacts(answer: string, customer: CustomerInsight) {
-  const clean = answer.toLowerCase();
-  const facts: string[] = [];
-  if (/(mục tiêu|mong muốn|ưu tiên|nhu cầu)/i.test(clean)) facts.push(customer.need);
-  if (/(khi nào|bao giờ|thời gian|rảnh|gấp|ngày|tuần|tháng)/i.test(clean)) facts.push(customer.timing);
-  if (/(từng|trước đây|đã dùng|đã mua|đã học|kinh nghiệm|lần trước)/i.test(clean)) facts.push(customer.past);
-  if (/(giá|ngân sách|chi phí|đầu tư|học phí|mức tiền)/i.test(clean)) facts.push(customer.budget);
-  if (/(ai quyết|người quyết|chồng|vợ|gia đình|sếp|phê duyệt)/i.test(clean)) facts.push(customer.decision);
-  if (/(lo|ngại|sợ|rủi ro|băn khoăn)/i.test(clean)) facts.push(customer.fear);
-  const unique = [...new Set(facts)];
-  return unique.length ? unique.slice(0, 3).map((fact) => fact.charAt(0).toUpperCase() + fact.slice(1)).join(". ") : customer.situation;
-}
-
-function pickFresh(candidates: string[], previousCustomer: string[], turn: number) {
-  const fresh = candidates.filter((item) => !previousCustomer.some((message) => message.includes(item)));
-  const pool = fresh.length ? fresh : candidates;
-  return pool[turn % pool.length];
-}
-
-export function customerReply(answer: string, scenario: Scenario, product: Product, industry: Industry, customer: CustomerInsight, turn: number, previousCustomer: string[]): string {
-  if (!answer.trim() || nonsense.test(answer.trim())) {
-    return [
-      "Chị chưa thấy câu đó liên quan đến điều chị vừa hỏi. Em có thể trả lời thẳng vào vấn đề được không?",
-      "Nếu em chưa hiểu ý chị thì hỏi lại cho rõ, đừng trả lời cho có nhé.",
-      "Câu vừa rồi chưa giúp chị có thêm dữ kiện nào để quyết định cả.",
-    ][turn % 3];
-  }
-
-  const mismatch = contextMismatch(answer, industry, product, customer);
-  if (mismatch) return mismatch.reply;
-
-  const clean = answer.toLowerCase();
-  const asked = clean.includes("?") || questionWords.test(clean);
-  const mentionsWarranty = /(bảo hành|đổi trả|hậu mãi|hỗ trợ sau)/i.test(clean);
-  const mentionsPrice = /(giảm|khuyến mãi|giá|chi phí|rẻ|ngân sách)/i.test(clean);
-  const mentionsProof = /(cam kết|bằng chứng|chứng nhận|case|số liệu|hồ sơ)/i.test(clean);
-  const mentionsComparison = /(so sánh|đối thủ|bên khác|phương án khác)/i.test(clean);
-
-  const bank: Record<Scenario["objection"], string[]> = {
-    time: [
-      "Chị chỉ cần biết điểm nào thật sự liên quan đến trường hợp của mình thôi, em đừng giới thiệu hết nhé.",
-      industry.challenges[0], industry.afterSalesChallenge, industry.challenges[1], industry.challenges[2],
-    ],
-    price: [
-      `Nếu chọn ${product.name} thì phần nào đáng để chị trả thêm tiền nhất?`, industry.priceChallenge, industry.challenges[3], industry.afterSalesChallenge, industry.comparisonChallenge,
-    ],
-    trust: [
-      industry.proofChallenge, industry.challenges[1], industry.challenges[2], industry.afterSalesChallenge, `Nói thật giúp chị: ${product.name} có điểm gì bên em không thể cam kết?`,
-    ],
-    authority: [
-      "Người cùng quyết định với chị sẽ không nghe lời quảng cáo đâu. Em có gì đủ rõ để chị gửi họ xem?", industry.proofChallenge, industry.priceChallenge, "Chị chưa muốn đặt cọc hay thanh toán ngay. Có bước nào để kiểm tra trước không?", industry.afterSalesChallenge,
-    ],
-    fit: [
-      industry.challenges[0], industry.challenges[2], industry.challenges[4], `Với trường hợp của chị, có lý do nào để không nên chọn ${product.name} không?`, `Em dựa vào đâu để biết ${product.name} thực sự hợp với nhu cầu này?`,
-    ],
-    competition: [
-      industry.comparisonChallenge, industry.proofChallenge, industry.priceChallenge, `Có trường hợp nào chị nên chọn bên khác thay vì ${product.name} không?`, "Em nói ngắn gọn ba điểm để chị tự so được không?",
-    ],
-  };
-  const reactive = [
-    ...(mentionsWarranty ? [industry.afterSalesChallenge] : []),
-    ...(mentionsPrice ? [industry.priceChallenge] : []),
-    ...(mentionsProof ? [industry.proofChallenge] : []),
-    ...(mentionsComparison ? [industry.comparisonChallenge] : []),
-    ...bank[scenario.objection],
-  ];
-  const challenge = pickFresh(reactive, previousCustomer, turn);
-  if (!asked) return challenge;
-
-  const fact = askedFacts(answer, customer);
-  const bridges: Record<CustomerInsight["voice"], string[]> = {
-    direct: ["Còn một điểm chị muốn hỏi rõ.", "Nhưng chị cần em nói thẳng chỗ này.", "Được, vậy còn chuyện này."],
-    cautious: ["Chị hiểu. Nhưng chị vẫn hơi lo một việc.", "Ừ, đúng tình trạng của chị. Chị hỏi thêm nhé.", "Vậy thì em làm rõ giúp chị một việc."],
-    impatient: ["Ừ, nhưng đi thẳng vào ý này giúp chị.", "Được rồi, còn điểm này.", "Chị hiểu. Giờ trả lời nhanh giúp chị."],
-    skeptical: ["Nhưng nói thật nhé, chị vẫn chưa yên tâm.", "Ừ, chị nghe rồi. Còn việc này thì sao?", "Chị cần kiểm tra thêm một điểm."],
-  };
-  const bridge = bridges[customer.voice][turn % bridges[customer.voice].length];
-  return `${fact.charAt(0).toUpperCase()}${fact.slice(1)}. ${bridge} ${challenge}`;
 }
 
 export default function TrainingPortal({ identity, isAdmin }: { identity: Identity; isAdmin: boolean }) {
@@ -232,6 +59,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   const [adminSessions, setAdminSessions] = useState<SavedSession[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [responding, setResponding] = useState(false);
   const chatEnd = useRef<HTMLDivElement>(null);
 
   const industry = useMemo(() => industries.find((item) => item.id === industryId) ?? industries[0], [industryId]);
@@ -244,7 +72,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   const score = saleMessages.length ? Math.round(saleMessages.reduce((sum, item) => sum + (item.feedback?.score ?? 0), 0) / saleMessages.length) : 0;
 
   useEffect(() => {
-    fetch("/api/me").then((res) => res.json()).then((data) => setProfile(data.profile ?? null)).catch(() => setProfile(null));
+    fetch("/api/me").then((res) => res.json()).then((data) => setProfile((data as { profile?: Profile }).profile ?? null)).catch(() => setProfile(null));
   }, []);
 
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -255,29 +83,49 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
     setTab("train");
   }
 
-  function sendMessage(event: FormEvent) {
+  async function sendMessage(event: FormEvent) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || saved) return;
-    const lastCustomer = [...messages].reverse().find((message) => message.role === "customer")?.text ?? "";
-    const feedback = correctionFor(text, scenario, product, industry, customer, lastCustomer);
-    const turn = saleMessages.length;
-    setMessages((current) => [
-      ...current,
-      { id: uid(), role: "sale", text, feedback },
-      { id: uid(), role: "customer", text: customerReply(text, scenario, product, industry, customer, turn, messages.filter((message) => message.role === "customer").map((message) => message.text)) },
-    ]);
+    if (!text || saved || responding) return;
+    const saleId = uid();
+    const currentTranscript = messages;
+    setMessages((current) => [...current, { id: saleId, role: "sale", text }]);
     setDraft("");
+    setResponding(true);
+    try {
+      const response = await fetch("/api/training/respond", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answer: text, industryId: industry.id, productId: product.id, scenarioId: scenario.id, customerIndex, transcript: currentTranscript }),
+      });
+      const data = await response.json() as TurnResponse;
+      if (!response.ok) throw new Error(data.error ?? "Không thể tạo phản hồi");
+      if (!data.feedback || !data.customerMessage) throw new Error("Phản hồi không hợp lệ");
+      const feedback = data.feedback;
+      const customerMessage = data.customerMessage;
+      setMessages((current) => [
+        ...current.map((message) => message.id === saleId ? { ...message, feedback } : message),
+        { id: uid(), role: "customer", text: customerMessage },
+      ]);
+    } catch {
+      setMessages((current) => [
+        ...current.map((message) => message.id === saleId ? { ...message, feedback: { score: 0, issue: "Hệ thống chưa phân tích được câu này. Vui lòng gửi lại.", corrected: "Hãy thử gửi lại câu trả lời ngắn gọn hơn.", process: "Lỗi kết nối" } } : message),
+        { id: uid(), role: "customer", text: "Kết nối vừa bị gián đoạn. Em gửi lại câu trả lời giúp chị nhé." },
+      ]);
+    } finally {
+      setResponding(false);
+    }
   }
 
   async function finishSession() {
     if (!saleMessages.length || busy) return;
     setBusy(true);
+    const metricAverage = (key: string, fallback: number) => Math.round(saleMessages.reduce((sum, item) => sum + (item.feedback?.metrics?.[key] ?? fallback), 0) / saleMessages.length);
     const metrics = {
-      "Bám sát lời khách": Math.round(saleMessages.reduce((sum, item) => sum + Math.min(100, (item.feedback?.score ?? 0) + 5), 0) / saleMessages.length),
+      "Bám sát lời khách": metricAverage("Bám sát lời khách", score),
       "Đúng quy trình": score,
-      "Câu hỏi khai thác": Math.round((saleMessages.filter((item) => questionWords.test(item.text) || item.text.includes("?")).length / saleMessages.length) * 100),
-      "Xử lý tự nhiên": Math.round((saleMessages.filter((item) => empathyWords.test(item.text)).length / saleMessages.length) * 100),
+      "Câu hỏi khai thác": metricAverage("Khai thác", Math.round((saleMessages.filter((item) => questionWords.test(item.text) || item.text.includes("?")).length / saleMessages.length) * 100)),
+      "Xử lý tự nhiên": metricAverage("Lắng nghe", Math.round((saleMessages.filter((item) => empathyWords.test(item.text)).length / saleMessages.length) * 100)),
     };
     const response = await fetch("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ productId, scenarioId, score, turns: saleMessages.length, metrics, transcript: messages }) });
     setBusy(false);
@@ -287,7 +135,7 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
   async function loadHistory(target: "history" | "admin") {
     setTab(target);
     const response = await fetch(target === "admin" ? "/api/admin/sessions" : "/api/sessions");
-    const data = await response.json();
+    const data = await response.json() as { sessions?: SavedSession[] };
     if (target === "admin") setAdminSessions(data.sessions ?? []);
     else setSessions(data.sessions ?? []);
   }
@@ -331,7 +179,8 @@ export default function TrainingPortal({ identity, isAdmin }: { identity: Identi
               {messages.map((message) => <ChatMessage key={message.id} message={message} />)}
               <div ref={chatEnd} />
             </div>
-            {messages.length > 0 && !saved && <form className="composer" onSubmit={sendMessage}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Nhập câu trả lời của sale…" rows={2} /><button className="send-button" aria-label="Gửi">Gửi</button></form>}
+            {responding && <div className="customer-thinking"><span /><span /><span /> Khách đang cân nhắc câu trả lời…</div>}
+            {messages.length > 0 && !saved && <form className="composer" onSubmit={sendMessage}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Nhập câu trả lời của sale…" rows={2} disabled={responding} /><button className="send-button" aria-label="Gửi" disabled={responding}>{responding ? "Đang phản hồi" : "Gửi"}</button></form>}
             {saved && <div className="saved-banner"><strong>Đã lưu phiên · {score}/100</strong><span>Admin có thể xem đầy đủ hội thoại và phần chữa bài này.</span></div>}
           </section>
         </section>
@@ -352,9 +201,9 @@ function Registration({ identity, onComplete }: { identity: Identity; onComplete
     event.preventDefault();
     setBusy(true);
     const response = await fetch("/api/me", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ displayName, team }) });
-    const data = await response.json();
+    const data = await response.json() as { profile?: Profile };
     setBusy(false);
-    if (response.ok) onComplete(data.profile);
+    if (response.ok && data.profile) onComplete(data.profile);
   }
 
   return <main className="login-shell"><form className="login-card registration" onSubmit={register}><div className="brand-mark">S</div><p className="eyebrow">HOÀN TẤT ĐĂNG KÝ</p><h1>Chào mừng đến Sales Lab Đa Ngành</h1><p className="login-copy">Nhập thông tin ngắn gọn để điểm và lịch sử được ghi đúng theo từng thành viên.</p><label>Họ và tên<input value={displayName} onChange={(e) => setDisplayName(e.target.value)} minLength={2} maxLength={80} required /></label><label>Đội / phòng ban<input value={team} onChange={(e) => setTeam(e.target.value)} minLength={2} maxLength={80} required /></label><button className="primary-button" disabled={busy}>{busy ? "Đang tạo tài khoản…" : "Bắt đầu luyện"}</button></form></main>;

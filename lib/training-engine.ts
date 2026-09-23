@@ -1,0 +1,416 @@
+import { takiSteps, type CustomerInsight, type Industry, type Product, type Scenario } from "../app/data";
+
+export type Feedback = {
+  score: number;
+  issue: string;
+  corrected: string;
+  process: string;
+  metrics?: Record<string, number>;
+};
+
+export type TrainingMessage = {
+  id?: string;
+  role: "customer" | "sale";
+  text: string;
+  feedback?: Feedback;
+};
+
+export type TrainingTurnResult = {
+  customerMessage: string;
+  feedback: Feedback;
+  mode: "ai" | "adaptive";
+  diagnostics: {
+    detectedIntents: string[];
+    answeredFacts: string[];
+    challengeType: string;
+    duplicateRisk: number;
+  };
+};
+
+type Intent =
+  | "need"
+  | "timing"
+  | "past"
+  | "budget"
+  | "decision"
+  | "fear"
+  | "warranty"
+  | "price"
+  | "proof"
+  | "comparison"
+  | "fit"
+  | "next_step";
+
+const nonsense = /^(ok|ừ|uh|uk|haha|hihi|không biết|chịu|asdf|test|abc|123|gì vậy|linh tinh|ờ|uhm)[.!?\s]*$/i;
+const empathyPattern = /(em hiểu|em ghi nhận|em đồng ý|đúng là|chị đang lo|chị băn khoăn|cảm ơn chị|em xin lỗi|em hiểu ý|em hiểu rằng)/i;
+const evidencePattern = /(ví dụ|case|kết quả|số liệu|cam kết|lộ trình|thực tế|đã áp dụng|đo lường|chứng nhận|hồ sơ|video|ảnh thật)/i;
+const nextStepPattern = /(hẹn|gọi|demo|đăng ký|xác nhận|giữ chỗ|bước tiếp|thời gian nào|ngày nào|gửi chị|đặt lịch|xem mẫu|thử|đo)/i;
+const questionPattern = /\?|\b(không|chưa|nào|bao nhiêu|vì sao|điều gì|khi nào|ai|chị có|chị đang|chị muốn|chị cần)\b/i;
+const vagueOptionPattern = /\b(mẫu|gói|loại|phương án)\s*(số\s*)?\d+\s*(ok|được|ổn|hợp|không)|\b(mẫu|gói|loại|phương án)\s+này\s*(ok|được|ổn|hợp|không)/i;
+
+const intentPatterns: Record<Intent, RegExp> = {
+  need: /(mục tiêu|mong muốn|ưu tiên|nhu cầu|cần gì|tìm gì|dùng để|mua để)/i,
+  timing: /(khi nào|bao giờ|thời gian|rảnh|gấp|ngày nào|tuần này|tháng này|cần trước|dự kiến (khi|ngày|tháng|tuần))/i,
+  past: /(từng|trước đây|đã dùng|đã mua|đã học|kinh nghiệm|lần trước|trải nghiệm cũ)/i,
+  budget: /(ngân sách|mức tiền|khoảng bao nhiêu|chi được|đầu tư bao nhiêu|học phí)/i,
+  decision: /(ai quyết|người quyết|chồng|vợ|gia đình|sếp|phê duyệt|quyết định cùng)/i,
+  fear: /(lo nhất|ngại nhất|sợ|rủi ro|băn khoăn|e ngại)/i,
+  warranty: /(bảo hành|đổi trả|hậu mãi|hỗ trợ sau|bảo trì|hoàn tiền)/i,
+  price: /(giá|chi phí|rẻ|đắt|khuyến mãi|giảm|phát sinh|đơn giá)/i,
+  proof: /(bằng chứng|chứng nhận|case|số liệu|hồ sơ|kiểm chứng|cam kết|ảnh thật|video thật)/i,
+  comparison: /(so sánh|đối thủ|bên khác|phương án khác|chỗ khác|thương hiệu khác)/i,
+  fit: /(phù hợp|hợp với|đáp ứng|giải quyết|dành cho|đúng nhu cầu)/i,
+  next_step: /(hẹn|đăng ký|đặt lịch|giữ chỗ|chốt|thanh toán|đặt cọc|bước tiếp)/i,
+};
+
+const sectorSignals: Record<string, RegExp> = {
+  fashion: /(size|form|dáng|vai|eo|vòng ngực|số đo|vải|màu|chiều cao|cân nặng)/i,
+  accessories: /(phụ kiện|trang sức|nhẫn|vòng|dây chuyền|cổ tay|ngón tay|chất liệu|dị ứng|xuống màu|khóa|làm quà)/i,
+  beauty: /(da|mụn|nám|routine|hoạt chất|retinol|kích ứng|thành phần|serum|mỹ phẩm)/i,
+  food: /(ăn|uống|khẩu phần|calo|đạm|đường|dinh dưỡng|dị ứng|hạn dùng|bảo quản)/i,
+  "home-appliances": /(diện tích|công suất|độ ồn|điện|vệ sinh|bộ lọc|linh kiện|gia dụng)/i,
+  technology: /(cấu hình|ram|chip|pin|phần mềm|dữ liệu|camera|bộ nhớ|bảo mật|công nghệ)/i,
+  education: /(mục tiêu học|khóa học|lộ trình|giảng viên|bài tập|trình độ|đầu ra|chuyển nghề|portfolio)/i,
+  travel: /(chuyến đi|phòng|khách sạn|tour|vé|lịch trình|hoàn hủy|trẻ em|người lớn tuổi)/i,
+  "real-estate": /(căn hộ|pháp lý|sổ|vay|lãi suất|dòng tiền|bàn giao|thanh khoản|mét vuông)/i,
+  healthcare: /(triệu chứng|bệnh|thuốc|bác sĩ|xét nghiệm|điều trị|sức khỏe|bệnh nền|chỉ định)/i,
+  spa: /(liệu trình|phác đồ|laser|thẩm mỹ|thiết bị|chống chỉ định|hồi phục)/i,
+  interior: /(mặt bằng|nội thất|tủ|bếp|sofa|bản vẽ|boq|thi công|kích thước)/i,
+  "building-materials": /(công trình|vật tư|gạch|chống thấm|định mức|lô|co\/cq|nghiệm thu|hao hụt)/i,
+};
+
+const stopWords = new Set("chị em anh là và có của cho với thì mà được không một những các đang sẽ đã này đó để về như từ vào khi nếu cũng rất chỉ cần muốn giúp bên mình ạ nhé nha rồi còn".split(" "));
+
+function normalize(text: string) {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokens(text: string) {
+  return normalize(text).split(" ").filter((word) => word.length > 2 && !stopWords.has(word));
+}
+
+export function similarity(left: string, right: string) {
+  const a = new Set(tokens(left));
+  const b = new Set(tokens(right));
+  if (!a.size || !b.size) return 0;
+  const intersection = [...a].filter((word) => b.has(word)).length;
+  return intersection / Math.max(1, Math.min(a.size, b.size));
+}
+
+function hash(text: string) {
+  let value = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    value ^= text.charCodeAt(index);
+    value = Math.imul(value, 16777619);
+  }
+  return Math.abs(value >>> 0);
+}
+
+function sentenceCount(text: string) {
+  return text.split(/[.!?\n]+/).filter((part) => part.trim().length > 3).length;
+}
+
+function detectIntents(text: string): Intent[] {
+  return (Object.entries(intentPatterns) as [Intent, RegExp][])
+    .filter(([, pattern]) => pattern.test(text))
+    .map(([intent]) => intent);
+}
+
+function customerFact(intent: Intent, customer: CustomerInsight) {
+  const facts: Partial<Record<Intent, string>> = {
+    need: customer.need,
+    timing: customer.timing,
+    past: customer.past,
+    budget: customer.budget,
+    decision: customer.decision,
+    fear: customer.fear,
+  };
+  return facts[intent] ?? "";
+}
+
+function upperFirst(text: string) {
+  const clean = text.trim().replace(/[.?!]+$/, "");
+  return clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : clean;
+}
+
+function contextMismatch(text: string, industry: Industry) {
+  const bodyStats = /(cao bao nhiêu|chiều cao|nặng bao nhiêu|cân nặng|bao nhiêu kg|mấy kg)/i.test(text);
+  const bodyStatsRelevant = ["fashion", "food", "healthcare", "spa"].includes(industry.id);
+  if (bodyStats && !bodyStatsRelevant) return true;
+  const ownTopic = sectorSignals[industry.id]?.test(text) ?? false;
+  const foreignTopic = Object.entries(sectorSignals).some(([id, pattern]) => id !== industry.id && pattern.test(text));
+  const usefulGeneric = /(mục tiêu|mong muốn|ưu tiên|ngân sách|thời gian|từng dùng|từng mua|trước đây|ai quyết|lo nhất|băn khoăn|bảo hành|giá|bằng chứng)/i.test(text);
+  return !ownTopic && foreignTopic && !usefulGeneric;
+}
+
+function relevantToLastCustomer(answer: string, lastCustomer: string, intents: Intent[]) {
+  const overlap = similarity(answer, lastCustomer);
+  const lastIntents = detectIntents(lastCustomer);
+  const intentMatch = intents.some((intent) => lastIntents.includes(intent));
+  return Math.min(1, Math.max(overlap, intentMatch ? 0.72 : 0));
+}
+
+function pickLeastRepeated(candidates: { text: string; type: string }[], previousCustomer: string[], seed: string) {
+  const ranked = candidates.map((candidate, index) => ({
+    ...candidate,
+    index,
+    repeat: previousCustomer.reduce((max, message) => Math.max(max, similarity(candidate.text, message)), 0),
+  })).sort((a, b) => a.repeat - b.repeat || ((hash(seed + a.index) % 997) - (hash(seed + b.index) % 997)));
+  return ranked[0];
+}
+
+function challengeBank(scenario: Scenario, industry: Industry, product: Product) {
+  const common = [
+    { text: industry.afterSalesChallenge, type: "warranty" },
+    { text: industry.priceChallenge, type: "price" },
+    { text: industry.proofChallenge, type: "proof" },
+    { text: industry.comparisonChallenge, type: "comparison" },
+    ...industry.challenges.map((text, index) => ({ text, type: `industry_${index + 1}` })),
+  ];
+  const scenarioSpecific: Record<Scenario["objection"], { text: string; type: string }[]> = {
+    time: [
+      { text: "Chị đang ít thời gian, em chọn đúng một thông tin quan trọng nhất cần hỏi trước được không?", type: "focus" },
+      { text: "Nếu cần quyết nhanh thì bước nào là bắt buộc và bước nào có thể làm sau?", type: "priority" },
+    ],
+    price: [
+      { text: `Với ${product.name}, phần giá trị nào đủ rõ để chị trả thêm tiền?`, type: "price_value" },
+      { text: "Em tách giúp chị chi phí chính, chi phí có thể phát sinh và phần không bao gồm nhé.", type: "price_breakdown" },
+    ],
+    trust: [
+      { text: `Nói thật giúp chị: ${product.name} có giới hạn nào bên em không thể cam kết?`, type: "limitations" },
+      { text: "Bằng chứng nào kiểm tra được độc lập, không phải nội dung quảng cáo của bên em?", type: "independent_proof" },
+    ],
+    authority: [
+      { text: "Người cùng quyết định với chị cần xem thông tin gì để không phải nghe lại toàn bộ tư vấn?", type: "decision_pack" },
+      { text: "Chị chưa đặt cọc ngay. Có bước kiểm tra nào trước khi cả nhà quyết định không?", type: "low_risk_step" },
+    ],
+    fit: [
+      { text: `Trường hợp nào thì chị không nên chọn ${product.name}?`, type: "disqualifier" },
+      { text: `Em dựa trên dữ kiện nào để kết luận ${product.name} hợp với trường hợp của chị?`, type: "fit_evidence" },
+    ],
+    competition: [
+      { text: "Em chọn ba tiêu chí có thể kiểm chứng để chị tự so với bên khác nhé.", type: "comparison_criteria" },
+      { text: `Có trường hợp nào bên khác phù hợp hơn ${product.name} không?`, type: "honest_comparison" },
+    ],
+  };
+  return [...scenarioSpecific[scenario.objection], ...common];
+}
+
+function preferredChallenges(intents: Intent[], scenario: Scenario, industry: Industry, product: Product) {
+  const bank = challengeBank(scenario, industry, product);
+  const wanted = new Set<string>();
+  if (intents.includes("warranty")) wanted.add("warranty");
+  if (intents.includes("price") || intents.includes("budget")) wanted.add("price");
+  if (intents.includes("proof")) wanted.add("proof");
+  if (intents.includes("comparison")) wanted.add("comparison");
+  if (intents.includes("fit")) wanted.add("fit_evidence");
+  const reactive = bank.filter((item) => wanted.has(item.type));
+  return reactive.length ? [...reactive, ...bank.filter((item) => !wanted.has(item.type))] : bank;
+}
+
+function bridgeFor(customer: CustomerInsight, seed: string) {
+  const bridges: Record<CustomerInsight["voice"], string[]> = {
+    direct: ["Chị hỏi thẳng thêm một ý.", "Được, vậy em nói rõ giúp chị chỗ này.", "Chị cần chốt lại một điểm."],
+    cautious: ["Chị hiểu hơn rồi, nhưng vẫn còn một điều hơi lo.", "Thông tin đó hữu ích. Chị muốn làm rõ thêm một việc.", "Ừ, vậy chị hỏi kỹ thêm nhé."],
+    impatient: ["Được rồi, em trả lời nhanh thêm ý này nhé.", "Ừ, đi thẳng vào điểm này giúp chị.", "Chị hiểu. Còn đúng một việc nữa thôi."],
+    skeptical: ["Chị nghe rồi, nhưng vẫn cần kiểm tra thêm một điểm.", "Ừ, lý lẽ đó hợp lý; còn bằng chứng thực tế thì sao?", "Chị chưa yên tâm hoàn toàn, em làm rõ thêm nhé."],
+  };
+  const options = bridges[customer.voice];
+  return options[hash(seed) % options.length];
+}
+
+function responseForRepeatedFact(intent: Intent, customer: CustomerInsight) {
+  const labels: Partial<Record<Intent, string>> = {
+    need: "nhu cầu",
+    timing: "thời gian cần",
+    past: "trải nghiệm trước đây",
+    budget: "ngân sách",
+    decision: "người quyết định",
+    fear: "điều chị lo",
+  };
+  return `Phần ${labels[intent] ?? "đó"} chị vừa nói rồi: ${customerFact(intent, customer).replace(/^chị\s*/i, "")}. Em dùng dữ kiện đó để tư vấn tiếp giúp chị nhé.`;
+}
+
+function buildCustomerMessage(args: {
+  answer: string;
+  scenario: Scenario;
+  product: Product;
+  industry: Industry;
+  customer: CustomerInsight;
+  transcript: TrainingMessage[];
+}) {
+  const { answer, scenario, product, industry, customer, transcript } = args;
+  const clean = answer.trim();
+  const previousCustomer = transcript.filter((item) => item.role === "customer").map((item) => item.text);
+  const intents = detectIntents(clean);
+  const hasQuestion = questionPattern.test(clean);
+  const mismatch = contextMismatch(clean, industry);
+  const verbose = clean.length > 420 || sentenceCount(clean) > 7;
+  const vagueOption = vagueOptionPattern.test(clean) && !industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword.toLowerCase()));
+
+  if (!clean || nonsense.test(clean)) {
+    const candidate = pickLeastRepeated([
+      { text: "Chị chưa thấy câu đó trả lời điều chị vừa hỏi. Em nói lại đúng trọng tâm giúp chị nhé.", type: "nonsense" },
+      { text: "Nếu em chưa hiểu ý chị thì hỏi lại, đừng trả lời cho có nhé.", type: "nonsense" },
+      { text: "Câu vừa rồi chưa cho chị thêm dữ kiện nào để quyết định. Em trả lời lại cụ thể giúp chị.", type: "nonsense" },
+      { text: "Chị chưa hiểu em muốn tư vấn điều gì. Em bám đúng vấn đề chị vừa nêu nhé.", type: "nonsense" },
+    ], previousCustomer, clean + transcript.length);
+    return { text: candidate.text, intents, answeredFacts: [] as string[], challengeType: candidate.type, duplicateRisk: candidate.repeat };
+  }
+
+  if (mismatch) {
+    const naturalNeed = customer.need.replace(/^chị (cần|muốn)\s*/i, "");
+    const candidate = pickLeastRepeated([
+      { text: `Thông tin đó liên quan thế nào đến việc chọn ${product.name} vậy em? Chị đang cần ${naturalNeed}.`, type: "off_topic" },
+      { text: `Khoan, câu đó đang lệch khỏi nhu cầu của chị. Với ${product.name}, em cần hỏi dữ kiện nào thực sự liên quan?`, type: "off_topic" },
+      { text: `Chị chưa thấy mối liên hệ giữa câu vừa rồi và ${industry.decisionCriteria}. Em hỏi lại đúng trọng tâm giúp chị nhé.`, type: "off_topic" },
+    ], previousCustomer, clean);
+    return { text: candidate.text, intents, answeredFacts: [] as string[], challengeType: candidate.type, duplicateRisk: candidate.repeat };
+  }
+
+  if (vagueOption) {
+    const candidate = pickLeastRepeated([
+      { text: "Mẫu nào và đặc điểm nào khiến em thấy hợp với chị vậy? Em nói rõ căn cứ giúp chị nhé.", type: "vague_option" },
+      { text: `Chị chưa biết “mẫu đó” cụ thể là gì. Em mô tả chất liệu, đặc điểm và lý do phù hợp với nhu cầu của chị nhé.`, type: "vague_option" },
+      { text: `Em đang nói tới lựa chọn nào của ${product.name}? Chị cần thông tin cụ thể trước khi trả lời có hay không.`, type: "vague_option" },
+    ], previousCustomer, clean);
+    return { text: candidate.text, intents, answeredFacts: [] as string[], challengeType: candidate.type, duplicateRisk: candidate.repeat };
+  }
+
+  const factIntents = intents.filter((intent) => Boolean(customerFact(intent, customer))).slice(0, 3);
+  const repeatedIntent = factIntents.find((intent) => previousCustomer.some((message) => similarity(message, customerFact(intent, customer)) > 0.72));
+  if (hasQuestion && repeatedIntent && factIntents.length === 1) {
+    const text = responseForRepeatedFact(repeatedIntent, customer);
+    return { text, intents, answeredFacts: [repeatedIntent], challengeType: "already_answered", duplicateRisk: 0 };
+  }
+
+  const facts = factIntents.map((intent) => upperFirst(customerFact(intent, customer)));
+  const candidates = preferredChallenges(intents, scenario, industry, product);
+  const challenge = pickLeastRepeated(candidates, previousCustomer, clean + transcript.length);
+  const factText = facts.length ? `${facts.join(". ")}.` : "";
+  const bridge = bridgeFor(customer, clean + challenge.type);
+
+  let text: string;
+  if (verbose) {
+    text = `${factText ? `${factText} ` : ""}Em đang nói khá nhiều ý. Chị muốn em chốt đúng điểm này thôi: ${challenge.text}`;
+  } else if (hasQuestion && facts.length) {
+    text = `${factText} ${bridge} ${challenge.text}`;
+  } else if (hasQuestion) {
+    text = `${upperFirst(customer.situation)}. ${bridge} ${challenge.text}`;
+  } else {
+    text = `${bridge} ${challenge.text}`;
+  }
+
+  return {
+    text: text.replace(/\s+/g, " ").trim(),
+    intents,
+    answeredFacts: factIntents,
+    challengeType: challenge.type,
+    duplicateRisk: challenge.repeat,
+  };
+}
+
+function correctionFor(args: {
+  answer: string;
+  scenario: Scenario;
+  product: Product;
+  industry: Industry;
+  customer: CustomerInsight;
+  transcript: TrainingMessage[];
+}) {
+  const { answer, scenario, product, industry, transcript } = args;
+  const clean = answer.trim();
+  const lastCustomer = [...transcript].reverse().find((message) => message.role === "customer")?.text ?? "";
+  const intents = detectIntents(clean);
+  const isNonsense = !clean || nonsense.test(clean);
+  const mismatch = contextMismatch(clean, industry);
+  const vagueOption = vagueOptionPattern.test(clean) && !industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword.toLowerCase()));
+  const asks = questionPattern.test(clean);
+  const empathizes = empathyPattern.test(clean);
+  const grounded = industry.keywords.some((keyword) => clean.toLowerCase().includes(keyword.toLowerCase())) || sectorSignals[industry.id]?.test(clean) === true;
+  const relevance = relevantToLastCustomer(clean, lastCustomer, intents);
+  const verbose = clean.length > 420 || sentenceCount(clean) > 7;
+  const hasEvidence = evidencePattern.test(clean);
+  const hasNextStep = nextStepPattern.test(clean);
+
+  const metrics = {
+    "Bám sát lời khách": Math.round(relevance * 100),
+    "Lắng nghe": empathizes ? 100 : 25,
+    "Khai thác": asks ? 90 : 20,
+    "Đúng dữ kiện ngành": grounded ? 90 : 35,
+    "Bước tiếp theo": hasNextStep ? 90 : scenario.step >= 7 ? 15 : 45,
+  };
+
+  let score = Math.round(
+    metrics["Bám sát lời khách"] * 0.38 +
+    metrics["Lắng nghe"] * 0.17 +
+    metrics["Khai thác"] * 0.2 +
+    metrics["Đúng dữ kiện ngành"] * 0.15 +
+    metrics["Bước tiếp theo"] * 0.1,
+  );
+  if (hasEvidence && scenario.step >= 5) score += 5;
+  if (clean.length < 18) score = Math.min(score, 18);
+  if (verbose) score = Math.min(score - 12, 55);
+  if (relevance < 0.22) score = Math.min(score, 32);
+  if (vagueOption) score = Math.min(score, 18);
+  if (mismatch) score = Math.min(score, 10);
+  if (isNonsense) score = 2;
+  score = Math.max(0, Math.min(100, score));
+
+  let issue = "Câu trả lời còn chung chung; hãy phản hồi đúng ý khách vừa nói rồi hỏi một dữ kiện có mục đích.";
+  if (isNonsense) issue = "Câu trả lời không có nội dung tư vấn và không giải quyết điều khách vừa nói.";
+  else if (mismatch) issue = `Câu hỏi đang lệch khỏi nhu cầu ${industry.name.toLowerCase()} và không giúp khách đánh giá ${product.name}.`;
+  else if (vagueOption) issue = "Bạn đưa một lựa chọn mơ hồ nhưng chưa nói đó là mẫu nào, đặc điểm gì và vì sao phù hợp với khách.";
+  else if (relevance < 0.22) issue = "Bạn chưa xử lý câu hỏi hoặc nỗi lo gần nhất của khách; các ý phía sau vì vậy bị lạc mạch.";
+  else if (verbose) issue = "Câu trả lời quá dài và chứa quá nhiều ý; khách khó tính sẽ không biết đâu là câu trả lời chính.";
+  else if (!empathizes) issue = "Bạn chưa xác nhận điều khách đang lo trước khi hỏi hoặc giới thiệu giải pháp.";
+  else if (!asks && scenario.step <= 5) issue = "Bạn đã phản hồi nhưng chưa hỏi một câu chẩn đoán giúp thu hẹp nhu cầu.";
+  else if (!grounded) issue = `Bạn chưa dùng dữ kiện đặc thù của ngành ${industry.name.toLowerCase()} để làm câu trả lời đáng tin.`;
+  else if (scenario.step >= 7 && !hasNextStep) issue = "Bạn chưa chốt một bước tiếp theo đủ cụ thể sau khi xử lý phản đối.";
+  else if (score >= 78) issue = "Câu trả lời bám mạch tốt; có thể sắc hơn bằng một bằng chứng hoặc điều kiện kiểm chứng cụ thể.";
+
+  const corrected = mismatch
+    ? `Dạ em xin lỗi, câu vừa rồi không liên quan đến nhu cầu của chị. ${industry.diagnosticQuestion}`
+    : vagueOption
+      ? `Dạ, em đang đề xuất ${product.name} dựa trên nhu cầu chị vừa nêu. Trước khi chị quyết định, em sẽ gửi rõ hình ảnh, đặc điểm, điều kiện áp dụng và lý do lựa chọn này phù hợp.`
+    : relevance < 0.22
+      ? `Dạ em hiểu chị đang quan tâm đúng phần vừa nêu. Trước khi tư vấn ${product.name}, ${industry.diagnosticQuestion.toLowerCase()}`
+      : `Dạ em hiểu điều chị đang cân nhắc. ${industry.diagnosticQuestion} Khi có dữ kiện đó, em sẽ nói rõ ${product.name} phù hợp ở đâu và giới hạn ở đâu.`;
+
+  return {
+    score,
+    issue,
+    corrected,
+    process: `Bước ${scenario.step} · ${takiSteps[scenario.step - 1]}`,
+    metrics,
+  } satisfies Feedback;
+}
+
+export function runAdaptiveTurn(args: {
+  answer: string;
+  scenario: Scenario;
+  product: Product;
+  industry: Industry;
+  customer: CustomerInsight;
+  transcript: TrainingMessage[];
+}): TrainingTurnResult {
+  const customer = buildCustomerMessage(args);
+  return {
+    customerMessage: customer.text,
+    feedback: correctionFor(args),
+    mode: "adaptive",
+    diagnostics: {
+      detectedIntents: customer.intents,
+      answeredFacts: customer.answeredFacts,
+      challengeType: customer.challengeType,
+      duplicateRisk: Number(customer.duplicateRisk.toFixed(2)),
+    },
+  };
+}
