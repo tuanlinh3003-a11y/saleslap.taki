@@ -46,7 +46,7 @@ const empathyPattern = /(em hiểu|em ghi nhận|em đồng ý|đúng là|chị 
 const evidencePattern = /(ví dụ|case|kết quả|số liệu|cam kết|lộ trình|thực tế|đã áp dụng|đo lường|chứng nhận|hồ sơ|video|ảnh thật)/i;
 const nextStepPattern = /(hẹn|gọi|demo|đăng ký|xác nhận|giữ chỗ|bước tiếp|thời gian nào|ngày nào|gửi chị|đặt lịch|xem mẫu|thử|đo)/i;
 const questionPattern = /\?|\b(không|chưa|nào|bao nhiêu|vì sao|điều gì|khi nào|ai|chị có|chị đang|chị muốn|chị cần)\b/i;
-const vagueOptionPattern = /\b(mẫu|gói|loại|phương án|máy|sản phẩm)\s*(số\s*)?\d+\b|\b(mẫu|gói|loại|phương án|máy|sản phẩm)\s+này\s*(ok|được|ổn|hợp|không|đáp ứng)/i;
+const vagueOptionPattern = /\b(mẫu|gói|loại|phương án|máy|sản phẩm|bộ|set|combo|căn|phòng|tour|khóa|liệu trình|dịch vụ)\s*(số\s*)?\d+\b|\b(mẫu|gói|loại|phương án|máy|sản phẩm|bộ|set|combo|căn|phòng|tour|khóa|liệu trình|dịch vụ)\s+này\s*(ok|được|ổn|hợp|không|đáp ứng)/i;
 const deliveryPattern = /(giao hàng|vận chuyển|giao trễ|giao chậm|chậm giao|trễ đơn|giao kịp|nhận hàng|đúng hẹn|tuyến giao)/i;
 
 const intentPatterns: Record<Intent, RegExp> = {
@@ -337,11 +337,17 @@ function buildCustomerMessage(args: {
 
   if (vagueOption) {
     const namedMachine = /\bmáy\s*(số\s*)?\d+\b/i.test(clean);
+    const numberedOption = clean.match(vagueOptionPattern)?.[0]?.trim();
     const optionCandidates = namedMachine
       ? [
           { text: `“Máy số 1” cụ thể là model nào? Em nói rõ ${industry.decisionCriteria} và vì sao nó hợp với nhu cầu chị vừa nêu nhé.`, type: "vague_option" },
           { text: `Em đang nói đến máy nào vậy? Chị cần biết kích thước, cách vệ sinh và căn cứ đáp ứng việc quét lau trước khi quyết định.`, type: "vague_option" },
         ]
+      : numberedOption
+        ? [
+            { text: `Chị vẫn chưa biết “${numberedOption}” cụ thể là lựa chọn nào. Em nêu tên hoặc mã, ${industry.decisionCriteria} và lý do phù hợp giúp chị nhé.`, type: "vague_option" },
+            { text: `“${upperFirst(numberedOption)}” là lựa chọn nào trong ${product.name}? Em mô tả đặc điểm thực tế và căn cứ phù hợp, đừng chỉ nói “đẹp” nhé.`, type: "vague_option" },
+          ]
       : [
           { text: "Mẫu nào và đặc điểm nào khiến em thấy hợp với chị vậy? Em nói rõ căn cứ giúp chị nhé.", type: "vague_option" },
           { text: `Chị chưa biết “mẫu đó” cụ thể là gì. Em mô tả đặc điểm và lý do phù hợp với nhu cầu của chị nhé.`, type: "vague_option" },
@@ -396,6 +402,8 @@ function correctionFor(args: {
   const clean = answer.trim();
   const lastCustomer = [...transcript].reverse().find((message) => message.role === "customer")?.text ?? "";
   const customerFocus = focusFromCustomer(lastCustomer, industry);
+  const optionReference = clean.match(vagueOptionPattern)?.[0]?.trim() ?? "lựa chọn đó";
+  const namedMachineOption = /\bmáy\s*(số\s*)?\d+\b/i.test(clean);
   const intents = detectIntents(clean);
   const isNonsense = !clean || nonsense.test(clean);
   const mismatch = contextMismatch(clean, industry);
@@ -493,10 +501,15 @@ function correctionFor(args: {
   const correctionCandidates = mismatch
     ? [`Dạ em xin lỗi, câu vừa rồi không liên quan đến nhu cầu của chị. ${industry.diagnosticQuestion}`]
     : vagueOption
-      ? [
-          `Dạ, em hiểu chị ${customerFocus}. Em chưa nên nói “lựa chọn số 1 đáp ứng hết” khi chưa kiểm tra. ${industry.diagnosticQuestion} Sau đó em sẽ nói rõ model và giới hạn thực tế của ${product.name}.`,
-          `Dạ, với nhu cầu ${customerFocus}, em đang đề xuất ${product.name} nhưng cần nêu rõ đó là lựa chọn nào và căn cứ phù hợp. Em sẽ đối chiếu theo ${industry.decisionCriteria}.`,
-        ]
+      ? namedMachineOption
+        ? [
+            `Dạ, em hiểu chị ${customerFocus}. Em chưa nên nói “${optionReference} đáp ứng hết” khi chưa kiểm tra. ${industry.diagnosticQuestion} Sau đó em sẽ nói rõ model, cách vệ sinh và giới hạn thực tế của ${product.name}.`,
+            `Dạ, với nhu cầu ${customerFocus}, em cần nói rõ ${optionReference} là model nào, kích thước, cách vệ sinh và căn cứ đáp ứng việc quét lau thay vì chỉ khẳng định chung chung.`,
+          ]
+        : [
+            `Dạ, em đang nói đến ${optionReference} trong danh sách vừa gửi. Em sẽ nêu rõ tên hoặc mã lựa chọn, ${industry.decisionCriteria} và lý do nó phù hợp với nhu cầu chị vừa nói.`,
+            `Dạ, em chưa trả lời rõ ${optionReference} là lựa chọn nào. Em xin chỉ đúng tên hoặc mã trong ${product.name}, mô tả đặc điểm thực tế và giải thích căn cứ phù hợp thay vì chỉ nói “đẹp” hoặc “đáp ứng hết”.`,
+          ]
       : relevance < 0.22
         ? focusCorrections
         : deliveryRelated

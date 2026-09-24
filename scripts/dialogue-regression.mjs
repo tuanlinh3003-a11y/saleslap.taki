@@ -166,6 +166,29 @@ for (const industry of industries) {
   assert(result.feedback.score <= 18, "gia dụng: khẳng định mơ hồ bị giới hạn điểm", String(result.feedback.score));
 }
 
+{
+  const industry = industries.find((item) => item.id === "fashion");
+  const product = products.find((item) => item.id === "linen-set");
+  const scenario = scenarios.find((item) => item.id === "cold");
+  const customer = customerInsights.fashion[0];
+  const question = "Em đang nói tới lựa chọn nào của Bộ linen thiết kế? Chị cần thông tin cụ thể trước khi trả lời có hay không.";
+  const result = runAdaptiveTurn({
+    answer: "Bộ số 1 ấy ạ, hàng chuẩn đẹp rất hợp với mình ạ.",
+    industry,
+    product,
+    scenario,
+    customer,
+    transcript: [{ role: "customer", text: question }],
+  });
+  assert(result.diagnostics.challengeType === "vague_option", "thời trang: bộ số 1 là lựa chọn mơ hồ", result.customerMessage);
+  assert(/bộ số 1|lựa chọn nào|tên hoặc mã/i.test(result.customerMessage), "thời trang: khách tiếp tục đòi xác định đúng bộ", result.customerMessage);
+  assert(/bộ số 1|tên hoặc mã|lựa chọn nào/i.test(result.feedback.corrected), "thời trang: câu gợi ý trả lời đúng bộ nào", result.feedback.corrected);
+  assert(/chất liệu|form|dáng|đổi trả|đặc điểm thực tế/i.test(result.feedback.corrected), "thời trang: câu gợi ý nêu đặc điểm cần làm rõ", result.feedback.corrected);
+  assert(!/khuyết điểm|thương hiệu đang dùng/i.test(result.feedback.corrected), "thời trang: không chuyển sang hỏi dữ kiện ngoài câu khách", result.feedback.corrected);
+  assert(/mơ hồ|chưa nói đó là|lựa chọn/i.test(result.feedback.issue), "thời trang: cần sửa đúng lỗi trả lời mơ hồ", result.feedback.issue);
+  assert(result.feedback.score <= 18, "thời trang: bộ số 1 mơ hồ bị giới hạn điểm", String(result.feedback.score));
+}
+
 await server.close();
 
 if (failures.length) {
