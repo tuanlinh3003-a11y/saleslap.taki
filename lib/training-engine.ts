@@ -46,7 +46,8 @@ const empathyPattern = /(em hiểu|em ghi nhận|em đồng ý|đúng là|chị 
 const evidencePattern = /(ví dụ|case|kết quả|số liệu|cam kết|lộ trình|thực tế|đã áp dụng|đo lường|chứng nhận|hồ sơ|video|ảnh thật)/i;
 const nextStepPattern = /(hẹn|gọi|demo|đăng ký|xác nhận|giữ chỗ|bước tiếp|thời gian nào|ngày nào|gửi chị|đặt lịch|xem mẫu|thử|đo)/i;
 const questionPattern = /\?|\b(không|chưa|nào|bao nhiêu|vì sao|điều gì|khi nào|ai|chị có|chị đang|chị muốn|chị cần)\b/i;
-const vagueOptionPattern = /\b(mẫu|gói|loại|phương án)\s*(số\s*)?\d+\s*(ok|được|ổn|hợp|không)|\b(mẫu|gói|loại|phương án)\s+này\s*(ok|được|ổn|hợp|không)/i;
+const vagueOptionPattern = /\b(mẫu|gói|loại|phương án|máy|sản phẩm)\s*(số\s*)?\d+\b|\b(mẫu|gói|loại|phương án|máy|sản phẩm)\s+này\s*(ok|được|ổn|hợp|không|đáp ứng)/i;
+const deliveryPattern = /(giao hàng|vận chuyển|giao trễ|giao chậm|chậm giao|trễ đơn|giao kịp|nhận hàng|đúng hẹn|tuyến giao)/i;
 
 const intentPatterns: Record<Intent, RegExp> = {
   need: /(mục tiêu|mong muốn|ưu tiên|nhu cầu|cần gì|tìm gì|dùng để|mua để)/i,
@@ -132,6 +133,23 @@ function hash(text: string) {
 
 function sentenceCount(text: string) {
   return text.split(/[.!?\n]+/).filter((part) => part.trim().length > 3).length;
+}
+
+function focusFromCustomer(text: string, industry: Industry) {
+  const parts = text.split(/[.!?\n]+/).map((part) => part.trim()).filter((part) => part.length > 8);
+  if (!parts.length) return "điều chị vừa nêu";
+  const ranked = parts.map((part, index) => {
+    const normalizedPart = ` ${normalize(part)} `;
+    const keywordHits = industry.keywords.filter((keyword) => {
+      const value = normalize(keyword);
+      return value.length >= 3 && normalizedPart.includes(` ${value} `);
+    }).length;
+    const sectorHit = sectorSignals[industry.id]?.test(part) ? 2 : 0;
+    const needHit = /(cần|muốn|ưu tiên|lo|sợ|phải|nếu)/i.test(part) ? 2 : 0;
+    return { part, index, score: keywordHits * 3 + sectorHit + needHit };
+  }).sort((left, right) => right.score - left.score || left.index - right.index);
+  const focus = ranked[0].part.replace(/^chị\s*/i, "").trim();
+  return focus.length > 150 ? `${focus.slice(0, 147).trim()}…` : focus;
 }
 
 function detectIntents(text: string): Intent[] {
@@ -243,7 +261,7 @@ function claimChallenges(answer: string, intents: Intent[]) {
   const certainty = /(cứ yên tâm|chắc chắn|cam kết|100%|không thể trễ|không trễ được|không bao giờ)/i.test(answer);
   const competitorClaim = /(bên (đó|kia).*(đểu|dở|kém|không tốt)|chất liệu bên (đó|kia))/i.test(answer);
 
-  if (intents.includes("timing") && certainty) {
+  if (deliveryPattern.test(answer) && certainty) {
     claims.push(
       { text: "Em nói sẽ không trễ, nhưng nếu đơn vẫn chậm do phát sinh vận chuyển thì bên em báo chị khi nào và xử lý ra sao?", type: "timing_claim" },
       { text: "Căn cứ nào để em chắc chắn giao kịp, và phương án dự phòng nếu hãng vận chuyển chậm là gì?", type: "timing_claim" },
@@ -318,11 +336,18 @@ function buildCustomerMessage(args: {
   }
 
   if (vagueOption) {
-    const candidate = pickLeastRepeated([
-      { text: "Mẫu nào và đặc điểm nào khiến em thấy hợp với chị vậy? Em nói rõ căn cứ giúp chị nhé.", type: "vague_option" },
-      { text: `Chị chưa biết “mẫu đó” cụ thể là gì. Em mô tả chất liệu, đặc điểm và lý do phù hợp với nhu cầu của chị nhé.`, type: "vague_option" },
-      { text: `Em đang nói tới lựa chọn nào của ${product.name}? Chị cần thông tin cụ thể trước khi trả lời có hay không.`, type: "vague_option" },
-    ], previousCustomer, clean);
+    const namedMachine = /\bmáy\s*(số\s*)?\d+\b/i.test(clean);
+    const optionCandidates = namedMachine
+      ? [
+          { text: `“Máy số 1” cụ thể là model nào? Em nói rõ ${industry.decisionCriteria} và vì sao nó hợp với nhu cầu chị vừa nêu nhé.`, type: "vague_option" },
+          { text: `Em đang nói đến máy nào vậy? Chị cần biết kích thước, cách vệ sinh và căn cứ đáp ứng việc quét lau trước khi quyết định.`, type: "vague_option" },
+        ]
+      : [
+          { text: "Mẫu nào và đặc điểm nào khiến em thấy hợp với chị vậy? Em nói rõ căn cứ giúp chị nhé.", type: "vague_option" },
+          { text: `Chị chưa biết “mẫu đó” cụ thể là gì. Em mô tả đặc điểm và lý do phù hợp với nhu cầu của chị nhé.`, type: "vague_option" },
+          { text: `Em đang nói tới lựa chọn nào của ${product.name}? Chị cần thông tin cụ thể trước khi trả lời có hay không.`, type: "vague_option" },
+        ];
+    const candidate = pickLeastRepeated(optionCandidates, previousCustomer, clean);
     return { text: candidate.text, intents, answeredFacts: [] as string[], challengeType: candidate.type, duplicateRisk: candidate.repeat };
   }
 
@@ -370,6 +395,7 @@ function correctionFor(args: {
   const { answer, scenario, product, industry, transcript } = args;
   const clean = answer.trim();
   const lastCustomer = [...transcript].reverse().find((message) => message.role === "customer")?.text ?? "";
+  const customerFocus = focusFromCustomer(lastCustomer, industry);
   const intents = detectIntents(clean);
   const isNonsense = !clean || nonsense.test(clean);
   const mismatch = contextMismatch(clean, industry);
@@ -382,6 +408,7 @@ function correctionFor(args: {
   const hasEvidence = evidencePattern.test(clean);
   const hasNextStep = nextStepPattern.test(clean);
   const lastCustomerIntents = detectIntents(lastCustomer);
+  const deliveryRelated = deliveryPattern.test(lastCustomer) || deliveryPattern.test(clean);
   const previousFeedback = transcript
     .filter((message) => message.role === "sale" && message.feedback)
     .flatMap((message) => [message.feedback?.issue ?? "", message.feedback?.corrected ?? ""])
@@ -420,7 +447,7 @@ function correctionFor(args: {
   if (isNonsense) issueCandidates = ["Câu trả lời không có nội dung tư vấn và không giải quyết điều khách vừa nói."];
   else if (mismatch) issueCandidates = [`Câu hỏi đang lệch khỏi nhu cầu ${industry.name.toLowerCase()} và không giúp khách đánh giá ${product.name}.`];
   else if (vagueOption) issueCandidates = ["Bạn đưa một lựa chọn mơ hồ nhưng chưa nói đó là mẫu nào, đặc điểm gì và vì sao phù hợp với khách."];
-  else if (lastCustomerIntents.includes("timing") && certaintyClaim) issueCandidates = [
+  else if (deliveryRelated && certaintyClaim) issueCandidates = [
     "Bạn trả lời đúng chủ đề giao hàng nhưng khẳng định không trễ khi chưa kiểm tra tuyến giao và chưa có phương án dự phòng.",
     "Lời cam kết giao kịp đang tuyệt đối quá; khách cần mốc xác nhận và cách xử lý nếu đơn vẫn chậm.",
   ];
@@ -455,7 +482,7 @@ function correctionFor(args: {
     `Dạ, em không nên đánh giá chất liệu bên khác khi chưa có căn cứ. Với ${product.name}, em sẽ so rõ loại chất liệu, độ hoàn thiện, khả năng giữ form và chính sách đổi trả để chị tự đánh giá.`,
     `Dạ, thay vì nói bên khác không tốt, em xin đối chiếu bằng tiêu chí cụ thể: chất liệu, đường may, độ bền màu và điều kiện đổi size của ${product.name}.`,
   ];
-  const focusCorrections = lastCustomerIntents.includes("timing")
+  const focusCorrections = deliveryRelated
     ? timingCorrections
     : lastCustomerIntents.includes("comparison")
       ? comparisonCorrections
@@ -466,10 +493,13 @@ function correctionFor(args: {
   const correctionCandidates = mismatch
     ? [`Dạ em xin lỗi, câu vừa rồi không liên quan đến nhu cầu của chị. ${industry.diagnosticQuestion}`]
     : vagueOption
-      ? [`Dạ, em đang đề xuất ${product.name} dựa trên nhu cầu chị vừa nêu. Em sẽ nói rõ mẫu, đặc điểm và lý do phù hợp trước khi hỏi chị quyết định.`]
+      ? [
+          `Dạ, em hiểu chị ${customerFocus}. Em chưa nên nói “lựa chọn số 1 đáp ứng hết” khi chưa kiểm tra. ${industry.diagnosticQuestion} Sau đó em sẽ nói rõ model và giới hạn thực tế của ${product.name}.`,
+          `Dạ, với nhu cầu ${customerFocus}, em đang đề xuất ${product.name} nhưng cần nêu rõ đó là lựa chọn nào và căn cứ phù hợp. Em sẽ đối chiếu theo ${industry.decisionCriteria}.`,
+        ]
       : relevance < 0.22
         ? focusCorrections
-        : lastCustomerIntents.includes("timing")
+        : deliveryRelated
           ? timingCorrections
           : lastCustomerIntents.includes("comparison")
             ? comparisonCorrections

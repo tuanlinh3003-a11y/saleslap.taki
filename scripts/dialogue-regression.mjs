@@ -143,6 +143,29 @@ for (const industry of industries) {
   assert(nextDelivery.feedback.issue !== delivery.feedback.issue, "chữa bài: nhận xét không lặp nguyên mẫu liên tiếp", nextDelivery.feedback.issue);
 }
 
+{
+  const industry = industries.find((item) => item.id === "home-appliances");
+  const product = products.find((item) => item.industryId === "home-appliances");
+  const scenario = scenarios.find((item) => item.id === "no-time");
+  const customer = customerInsights["home-appliances"][0];
+  const opening = "Chị đang tranh thủ có mấy phút thôi. Chị cần giảm thời gian quét lau nhưng máy phải gọn và dễ vệ sinh. Em hỏi nhanh giúp chị nhé.";
+  const result = runAdaptiveTurn({
+    answer: "Vâng, vậy máy số 1 đáp ứng hết nhu cầu của mình đó ạ.",
+    industry,
+    product,
+    scenario,
+    customer,
+    transcript: [{ role: "customer", text: opening }],
+  });
+  assert(result.diagnostics.challengeType === "vague_option", "gia dụng: máy số 1 là lựa chọn mơ hồ", result.customerMessage);
+  assert(/model nào|đặc điểm nào|lựa chọn nào/i.test(result.customerMessage), "gia dụng: khách yêu cầu nói rõ máy", result.customerMessage);
+  assert(/lựa chọn số 1|lựa chọn nào|model/i.test(result.feedback.corrected), "gia dụng: chữa đúng câu máy số 1", result.feedback.corrected);
+  assert(/giảm thời gian quét lau|gọn|dễ vệ sinh/i.test(result.feedback.corrected), "gia dụng: câu gợi ý nhắc đúng nhu cầu khách", result.feedback.corrected);
+  assert(/diện tích|tần suất|việc nhà|công suất|độ ồn|vệ sinh|model/i.test(result.feedback.corrected), "gia dụng: gợi ý dùng dữ kiện đúng ngành", result.feedback.corrected);
+  assert(!/tuyến giao|vận chuyển chậm|giao kịp|hàng sẵn/i.test(result.feedback.corrected), "gia dụng: thời gian quét lau không bị hiểu thành giao hàng", result.feedback.corrected);
+  assert(result.feedback.score <= 18, "gia dụng: khẳng định mơ hồ bị giới hạn điểm", String(result.feedback.score));
+}
+
 await server.close();
 
 if (failures.length) {
