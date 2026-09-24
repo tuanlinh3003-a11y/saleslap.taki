@@ -45,3 +45,7 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# Local project-guide artifacts; keep them on this computer, not in Site source.
+/HUONG_DAN_DU_AN_SALES_LAB.docx
+/scripts/create_project_guide_docx.py
