@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { customerInsights, industries, products, scenarios } from "../../../data";
 import { getChatGPTUser } from "../../../chatgpt-auth";
-import { runAdaptiveTurn, similarity, type TrainingMessage, type TrainingTurnResult } from "../../../../lib/training-engine";
+import { repetitionRisk, runAdaptiveTurn, type TrainingMessage, type TrainingTurnResult } from "../../../../lib/training-engine";
 
 export const dynamic = "force-dynamic";
 
@@ -129,8 +129,8 @@ async function runAiTurn(args: {
     });
     if (!response.ok) throw new Error(`OpenAI ${response.status}`);
     const output = JSON.parse(extractOutputText(await response.json())) as Omit<TrainingTurnResult, "mode">;
-    const duplicateRisk = previousCustomer.reduce((max, message) => Math.max(max, similarity(output.customerMessage, message)), 0);
-    if (!output.customerMessage || output.customerMessage.length > 430 || duplicateRisk > 0.76) throw new Error("unsafe_ai_output");
+    const duplicateRisk = previousCustomer.reduce((max, message) => Math.max(max, repetitionRisk(output.customerMessage, message)), 0);
+    if (!output.customerMessage || output.customerMessage.length > 430 || duplicateRisk > 0.68) throw new Error("unsafe_ai_output");
 
     const hardCap = args.fallback.feedback.score <= 10 ? 10 : args.fallback.feedback.score <= 32 ? 38 : 100;
     return {

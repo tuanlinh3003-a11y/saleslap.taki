@@ -1,7 +1,7 @@
 import { createServer } from "vite";
 
 const server = await createServer({ configFile: false, root: process.cwd(), server: { middlewareMode: true }, appType: "custom", logLevel: "silent" });
-const { runAdaptiveTurn, similarity } = await server.ssrLoadModule("/lib/training-engine.ts");
+const { repetitionRisk, runAdaptiveTurn, similarity } = await server.ssrLoadModule("/lib/training-engine.ts");
 const { industries, products, scenarios, customerInsights } = await server.ssrLoadModule("/app/data.ts");
 
 let checks = 0;
@@ -85,6 +85,12 @@ for (const industry of industries) {
   assert(new Set(replies).size >= 8, "chống lặp: tối thiểu 8/10 câu khác nhau", replies.join(" | "));
   const worstSimilarity = replies.flatMap((left, index) => replies.slice(index + 1).map((right) => similarity(left, right))).reduce((max, value) => Math.max(max, value), 0);
   assert(worstSimilarity < 0.9, "chống lặp: không có câu gần như sao chép", String(worstSimilarity));
+  const consecutiveRisk = replies.slice(1).map((reply, index) => repetitionRisk(reply, replies[index]));
+  assert(consecutiveRisk.every((value) => value < 0.68), "chống lặp: hai lượt liên tiếp không dùng lại cụm câu", consecutiveRisk.join(", "));
+  const openings = replies.map((reply) => reply.split(":")[0].trim().toLowerCase());
+  assert(openings.slice(1).every((opening, index) => opening !== openings[index]), "chống lặp: không lặp câu mở đầu liên tiếp", openings.join(" | "));
+  assert(replies.every((reply) => !/thông tin đó (rất )?hữu ích/i.test(reply)), "chống lặp: loại bỏ câu nối máy móc", replies.join(" | "));
+  assert(replies.every((reply) => reply.split(/[.!?]+/).filter((part) => part.trim()).length <= 3), "độ dài: mỗi lượt tối đa ba câu", replies.join(" | "));
 }
 
 await server.close();

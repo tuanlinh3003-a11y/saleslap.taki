@@ -79,7 +79,7 @@ const sectorSignals: Record<string, RegExp> = {
   "building-materials": /(công trình|vật tư|gạch|chống thấm|định mức|lô|co\/cq|nghiệm thu|hao hụt)/i,
 };
 
-const stopWords = new Set("chị em anh là và có của cho với thì mà được không một những các đang sẽ đã này đó để về như từ vào khi nếu cũng rất chỉ cần muốn giúp bên mình ạ nhé nha rồi còn".split(" "));
+const stopWords = new Set("chi em anh la va co cua cho voi thi ma duoc khong mot nhung cac dang se da nay do de ve nhu tu vao khi neu cung rat chi can muon giup ben minh nhe nha roi con".split(" "));
 
 function normalize(text: string) {
   return text
@@ -102,6 +102,23 @@ export function similarity(left: string, right: string) {
   if (!a.size || !b.size) return 0;
   const intersection = [...a].filter((word) => b.has(word)).length;
   return intersection / Math.max(1, Math.min(a.size, b.size));
+}
+
+function ngrams(text: string, size = 3) {
+  const words = tokens(text);
+  const values = new Set<string>();
+  for (let index = 0; index <= words.length - size; index += 1) values.add(words.slice(index, index + size).join(" "));
+  return values;
+}
+
+export function repetitionRisk(left: string, right: string) {
+  const semantic = similarity(left, right);
+  const leftNgrams = ngrams(left);
+  const rightNgrams = ngrams(right);
+  if (!leftNgrams.size || !rightNgrams.size) return semantic;
+  const shared = [...leftNgrams].filter((value) => rightNgrams.has(value)).length;
+  const phrase = shared / Math.max(1, Math.min(leftNgrams.size, rightNgrams.size));
+  return Math.max(semantic, phrase);
 }
 
 function hash(text: string) {
@@ -161,7 +178,7 @@ function pickLeastRepeated(candidates: { text: string; type: string }[], previou
   const ranked = candidates.map((candidate, index) => ({
     ...candidate,
     index,
-    repeat: previousCustomer.reduce((max, message) => Math.max(max, similarity(candidate.text, message)), 0),
+    repeat: previousCustomer.reduce((max, message) => Math.max(max, repetitionRisk(candidate.text, message)), 0),
   })).sort((a, b) => a.repeat - b.repeat || ((hash(seed + a.index) % 997) - (hash(seed + b.index) % 997)));
   return ranked[0];
 }
@@ -215,15 +232,14 @@ function preferredChallenges(intents: Intent[], scenario: Scenario, industry: In
   return reactive.length ? [...reactive, ...bank.filter((item) => !wanted.has(item.type))] : bank;
 }
 
-function bridgeFor(customer: CustomerInsight, seed: string) {
-  const bridges: Record<CustomerInsight["voice"], string[]> = {
-    direct: ["Chị hỏi thẳng thêm một ý.", "Được, vậy em nói rõ giúp chị chỗ này.", "Chị cần chốt lại một điểm."],
-    cautious: ["Chị hiểu hơn rồi, nhưng vẫn còn một điều hơi lo.", "Thông tin đó hữu ích. Chị muốn làm rõ thêm một việc.", "Ừ, vậy chị hỏi kỹ thêm nhé."],
-    impatient: ["Được rồi, em trả lời nhanh thêm ý này nhé.", "Ừ, đi thẳng vào điểm này giúp chị.", "Chị hiểu. Còn đúng một việc nữa thôi."],
-    skeptical: ["Chị nghe rồi, nhưng vẫn cần kiểm tra thêm một điểm.", "Ừ, lý lẽ đó hợp lý; còn bằng chứng thực tế thì sao?", "Chị chưa yên tâm hoàn toàn, em làm rõ thêm nhé."],
+function connectorsFor(customer: CustomerInsight) {
+  const connectors: Record<CustomerInsight["voice"], string[]> = {
+    direct: ["Chị hỏi thẳng thêm:", "Vậy em nói rõ giúp chị:", "Chị cần chốt đúng điểm này:", "Còn một ý quan trọng:", "Được, nhưng chị muốn biết:"],
+    cautious: ["Chị hiểu rồi, nhưng vẫn hơi lo:", "Vậy em làm rõ giúp chị:", "Chị muốn hỏi kỹ thêm:", "Phần này chị hiểu; còn điểm sau thì sao:", "Trước khi quyết định, chị cần biết:"],
+    impatient: ["Đi thẳng vào ý này giúp chị:", "Được rồi, trả lời nhanh giúp chị:", "Chị chỉ hỏi thêm đúng một việc:", "Vậy chốt giúp chị điểm này:", "Còn việc này thì sao:"],
+    skeptical: ["Chị vẫn cần kiểm tra thêm:", "Lý lẽ đó nghe được; còn điểm này:", "Chị chưa yên tâm ở chỗ:", "Muốn chị tin thì em làm rõ:", "Chị cần một câu trả lời cụ thể về:"],
   };
-  const options = bridges[customer.voice];
-  return options[hash(seed) % options.length];
+  return connectors[customer.voice];
 }
 
 function responseForRepeatedFact(intent: Intent, customer: CustomerInsight) {
@@ -292,28 +308,27 @@ function buildCustomerMessage(args: {
   }
 
   const facts = factIntents.map((intent) => upperFirst(customerFact(intent, customer)));
-  const candidates = preferredChallenges(intents, scenario, industry, product);
-  const challenge = pickLeastRepeated(candidates, previousCustomer, clean + transcript.length);
-  const factText = facts.length ? `${facts.join(". ")}.` : "";
-  const bridge = bridgeFor(customer, clean + challenge.type);
-
-  let text: string;
-  if (verbose) {
-    text = `${factText ? `${factText} ` : ""}Em đang nói khá nhiều ý. Chị muốn em chốt đúng điểm này thôi: ${challenge.text}`;
-  } else if (hasQuestion && facts.length) {
-    text = `${factText} ${bridge} ${challenge.text}`;
-  } else if (hasQuestion) {
-    text = `${upperFirst(customer.situation)}. ${bridge} ${challenge.text}`;
-  } else {
-    text = `${bridge} ${challenge.text}`;
-  }
+  const challengePool = preferredChallenges(intents, scenario, industry, product);
+  const factText = facts.length ? `${facts.join("; ")}.` : "";
+  const standardLeads = connectorsFor(customer);
+  const verboseLeads = ["Em đang nói khá nhiều ý. Chị cần em chốt đúng điểm này:", "Chị nghe nhiều ý quá. Em trả lời đúng một việc giúp chị:", "Mình tách từng ý nhé. Trước hết chị cần biết:", "Em nói ngắn lại giúp chị. Chị đang cần làm rõ:", "Chị chưa theo kịp hết các ý. Mình chốt trước việc này:"];
+  const leadOptions = verbose ? verboseLeads : standardLeads;
+  const recentCustomer = previousCustomer.slice(-4).map(normalize);
+  const freshLeads = leadOptions.filter((lead) => !recentCustomer.some((message) => message.includes(normalize(lead))));
+  const leadPool = freshLeads.length ? freshLeads : leadOptions;
+  const composed = challengePool.flatMap((challenge) => leadPool.map((lead) => {
+    const prefix = factText ? `${factText} ` : "";
+    return { text: `${prefix}${lead} ${challenge.text}`.replace(/\s+/g, " ").trim(), type: challenge.type };
+  }));
+  const selected = pickLeastRepeated(composed, previousCustomer, clean + transcript.length);
+  const text = selected.text;
 
   return {
     text: text.replace(/\s+/g, " ").trim(),
     intents,
     answeredFacts: factIntents,
-    challengeType: challenge.type,
-    duplicateRisk: challenge.repeat,
+    challengeType: selected.type,
+    duplicateRisk: selected.repeat,
   };
 }
 
