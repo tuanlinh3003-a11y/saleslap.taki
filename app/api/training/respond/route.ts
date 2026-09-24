@@ -80,6 +80,10 @@ async function runAiTurn(args: {
   fallback: TrainingTurnResult;
 }) {
   const previousCustomer = args.transcript.filter((message) => message.role === "customer").map((message) => message.text);
+  const previousFeedback = args.transcript
+    .filter((message) => message.role === "sale" && message.feedback)
+    .flatMap((message) => [message.feedback?.issue ?? "", message.feedback?.corrected ?? ""])
+    .filter(Boolean);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 14_000);
   try {
@@ -106,6 +110,7 @@ async function runAiTurn(args: {
           "Chấm điểm sale nghiêm: liên quan 38%, lắng nghe 17%, khai thác 20%, đúng dữ kiện 15%, bước tiếp 10%.",
           "Lệch chủ đề tối đa 10; vô nghĩa tối đa 2; không xử lý câu khách gần nhất tối đa 32; dài dòng tối đa 55.",
           "Phần chữa bài phải sửa đúng lỗi của câu sale mới nhất, không dùng nhận xét chung chung.",
+          "Không được lặp lại nhận xét hoặc câu gợi ý đã dùng ở các lượt trước; phải nhắc đúng cam kết, câu hỏi hoặc thiếu sót mới nhất của sale.",
         ].join("\n"),
         input: JSON.stringify({
           industry: args.industry,
@@ -115,6 +120,7 @@ async function runAiTurn(args: {
           recentTranscript: args.transcript.slice(-10).map(({ role, text }) => ({ role, text })),
           latestSalesMessage: args.answer,
           previousCustomerMessages: previousCustomer.slice(-8),
+          previousFeedback: previousFeedback.slice(-8),
           adaptiveAnalysis: args.fallback.diagnostics,
         }),
         text: {
@@ -130,7 +136,13 @@ async function runAiTurn(args: {
     if (!response.ok) throw new Error(`OpenAI ${response.status}`);
     const output = JSON.parse(extractOutputText(await response.json())) as Omit<TrainingTurnResult, "mode">;
     const duplicateRisk = previousCustomer.reduce((max, message) => Math.max(max, repetitionRisk(output.customerMessage, message)), 0);
-    if (!output.customerMessage || output.customerMessage.length > 430 || duplicateRisk > 0.68) throw new Error("unsafe_ai_output");
+    const feedbackDuplicateRisk = previousFeedback.reduce((max, message) => Math.max(
+      max,
+      repetitionRisk(`${output.feedback.issue} ${output.feedback.corrected}`, message),
+    ), 0);
+    if (!output.customerMessage || output.customerMessage.length > 430 || duplicateRisk > 0.68 || feedbackDuplicateRisk > 0.78) {
+      throw new Error("unsafe_ai_output");
+    }
 
     const hardCap = args.fallback.feedback.score <= 10 ? 10 : args.fallback.feedback.score <= 32 ? 38 : 100;
     return {

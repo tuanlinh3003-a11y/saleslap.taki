@@ -50,7 +50,7 @@ const vagueOptionPattern = /\b(mẫu|gói|loại|phương án)\s*(số\s*)?\d+\s
 
 const intentPatterns: Record<Intent, RegExp> = {
   need: /(mục tiêu|mong muốn|ưu tiên|nhu cầu|cần gì|tìm gì|dùng để|mua để)/i,
-  timing: /(khi nào|bao giờ|thời gian|rảnh|gấp|ngày nào|tuần này|tháng này|cần trước|dự kiến (khi|ngày|tháng|tuần))/i,
+  timing: /(khi nào|bao giờ|thời gian|rảnh|gấp|ngày nào|tuần này|tháng này|cần trước|dự kiến (khi|ngày|tháng|tuần)|giao hàng|vận chuyển|giao trễ|trễ|kịp|đúng hẹn)/i,
   past: /(từng|trước đây|đã dùng|đã mua|đã học|kinh nghiệm|lần trước|trải nghiệm cũ)/i,
   budget: /(ngân sách|mức tiền|khoảng bao nhiêu|chi được|đầu tư bao nhiêu|học phí)/i,
   decision: /(ai quyết|người quyết|chồng|vợ|gia đình|sếp|phê duyệt|quyết định cùng)/i,
@@ -58,7 +58,7 @@ const intentPatterns: Record<Intent, RegExp> = {
   warranty: /(bảo hành|đổi trả|hậu mãi|hỗ trợ sau|bảo trì|hoàn tiền)/i,
   price: /(giá|chi phí|rẻ|đắt|khuyến mãi|giảm|phát sinh|đơn giá)/i,
   proof: /(bằng chứng|chứng nhận|case|số liệu|hồ sơ|kiểm chứng|cam kết|ảnh thật|video thật)/i,
-  comparison: /(so sánh|đối thủ|bên khác|phương án khác|chỗ khác|thương hiệu khác)/i,
+  comparison: /(so sánh|đối thủ|bên khác|bên kia|bên đó|phương án khác|chỗ khác|thương hiệu khác|chênh lệch)/i,
   fit: /(phù hợp|hợp với|đáp ứng|giải quyết|dành cho|đúng nhu cầu)/i,
   next_step: /(hẹn|đăng ký|đặt lịch|giữ chỗ|chốt|thanh toán|đặt cọc|bước tiếp)/i,
 };
@@ -161,7 +161,13 @@ function contextMismatch(text: string, industry: Industry) {
   const bodyStats = /(cao bao nhiêu|chiều cao|nặng bao nhiêu|cân nặng|bao nhiêu kg|mấy kg)/i.test(text);
   const bodyStatsRelevant = ["fashion", "food", "healthcare", "spa"].includes(industry.id);
   if (bodyStats && !bodyStatsRelevant) return true;
-  const ownTopic = sectorSignals[industry.id]?.test(text) ?? false;
+  const normalizedText = normalize(text);
+  const paddedText = ` ${normalizedText} `;
+  const ownKeyword = industry.keywords.some((keyword) => {
+    const normalizedKeyword = normalize(keyword);
+    return normalizedKeyword.length >= 3 && paddedText.includes(` ${normalizedKeyword} `);
+  });
+  const ownTopic = ownKeyword || (sectorSignals[industry.id]?.test(text) ?? false);
   const foreignTopic = Object.entries(sectorSignals).some(([id, pattern]) => id !== industry.id && pattern.test(text));
   const usefulGeneric = /(mục tiêu|mong muốn|ưu tiên|ngân sách|thời gian|từng dùng|từng mua|trước đây|ai quyết|lo nhất|băn khoăn|bảo hành|giá|bằng chứng)/i.test(text);
   return !ownTopic && foreignTopic && !usefulGeneric;
@@ -228,8 +234,28 @@ function preferredChallenges(intents: Intent[], scenario: Scenario, industry: In
   if (intents.includes("proof")) wanted.add("proof");
   if (intents.includes("comparison")) wanted.add("comparison");
   if (intents.includes("fit")) wanted.add("fit_evidence");
-  const reactive = bank.filter((item) => wanted.has(item.type));
+  const reactive = bank.filter((item) => wanted.has(item.type) || detectIntents(item.text).some((intent) => intents.includes(intent)));
   return reactive.length ? [...reactive, ...bank.filter((item) => !wanted.has(item.type))] : bank;
+}
+
+function claimChallenges(answer: string, intents: Intent[]) {
+  const claims: { text: string; type: string }[] = [];
+  const certainty = /(cứ yên tâm|chắc chắn|cam kết|100%|không thể trễ|không trễ được|không bao giờ)/i.test(answer);
+  const competitorClaim = /(bên (đó|kia).*(đểu|dở|kém|không tốt)|chất liệu bên (đó|kia))/i.test(answer);
+
+  if (intents.includes("timing") && certainty) {
+    claims.push(
+      { text: "Em nói sẽ không trễ, nhưng nếu đơn vẫn chậm do phát sinh vận chuyển thì bên em báo chị khi nào và xử lý ra sao?", type: "timing_claim" },
+      { text: "Căn cứ nào để em chắc chắn giao kịp, và phương án dự phòng nếu hãng vận chuyển chậm là gì?", type: "timing_claim" },
+    );
+  }
+  if (intents.includes("comparison") && competitorClaim) {
+    claims.push(
+      { text: "Em nói chất liệu bên kia không tốt dựa trên thông tin nào? Chị cần em so bằng loại vải, độ hoàn thiện và chính sách đổi trả cụ thể.", type: "comparison_claim" },
+      { text: "Chị không muốn nghe nhận xét cảm tính về bên khác. Em chỉ rõ mẫu bên em hơn ở tiêu chí nào và có gì kiểm chứng được nhé.", type: "comparison_claim" },
+    );
+  }
+  return claims;
 }
 
 function connectorsFor(customer: CustomerInsight) {
@@ -308,7 +334,8 @@ function buildCustomerMessage(args: {
   }
 
   const facts = factIntents.map((intent) => upperFirst(customerFact(intent, customer)));
-  const challengePool = preferredChallenges(intents, scenario, industry, product);
+  const reactiveClaims = claimChallenges(clean, intents);
+  const challengePool = reactiveClaims.length ? reactiveClaims : preferredChallenges(intents, scenario, industry, product);
   const factText = facts.length ? `${facts.join("; ")}.` : "";
   const standardLeads = connectorsFor(customer);
   const verboseLeads = ["Em đang nói khá nhiều ý. Chị cần em chốt đúng điểm này:", "Chị nghe nhiều ý quá. Em trả lời đúng một việc giúp chị:", "Mình tách từng ý nhé. Trước hết chị cần biết:", "Em nói ngắn lại giúp chị. Chị đang cần làm rõ:", "Chị chưa theo kịp hết các ý. Mình chốt trước việc này:"];
@@ -354,6 +381,11 @@ function correctionFor(args: {
   const verbose = clean.length > 420 || sentenceCount(clean) > 7;
   const hasEvidence = evidencePattern.test(clean);
   const hasNextStep = nextStepPattern.test(clean);
+  const lastCustomerIntents = detectIntents(lastCustomer);
+  const previousFeedback = transcript
+    .filter((message) => message.role === "sale" && message.feedback)
+    .flatMap((message) => [message.feedback?.issue ?? "", message.feedback?.corrected ?? ""])
+    .filter(Boolean);
 
   const metrics = {
     "Bám sát lời khách": Math.round(relevance * 100),
@@ -379,25 +411,77 @@ function correctionFor(args: {
   if (isNonsense) score = 2;
   score = Math.max(0, Math.min(100, score));
 
-  let issue = "Câu trả lời còn chung chung; hãy phản hồi đúng ý khách vừa nói rồi hỏi một dữ kiện có mục đích.";
-  if (isNonsense) issue = "Câu trả lời không có nội dung tư vấn và không giải quyết điều khách vừa nói.";
-  else if (mismatch) issue = `Câu hỏi đang lệch khỏi nhu cầu ${industry.name.toLowerCase()} và không giúp khách đánh giá ${product.name}.`;
-  else if (vagueOption) issue = "Bạn đưa một lựa chọn mơ hồ nhưng chưa nói đó là mẫu nào, đặc điểm gì và vì sao phù hợp với khách.";
-  else if (relevance < 0.22) issue = "Bạn chưa xử lý câu hỏi hoặc nỗi lo gần nhất của khách; các ý phía sau vì vậy bị lạc mạch.";
-  else if (verbose) issue = "Câu trả lời quá dài và chứa quá nhiều ý; khách khó tính sẽ không biết đâu là câu trả lời chính.";
-  else if (!empathizes) issue = "Bạn chưa xác nhận điều khách đang lo trước khi hỏi hoặc giới thiệu giải pháp.";
-  else if (!asks && scenario.step <= 5) issue = "Bạn đã phản hồi nhưng chưa hỏi một câu chẩn đoán giúp thu hẹp nhu cầu.";
-  else if (!grounded) issue = `Bạn chưa dùng dữ kiện đặc thù của ngành ${industry.name.toLowerCase()} để làm câu trả lời đáng tin.`;
-  else if (scenario.step >= 7 && !hasNextStep) issue = "Bạn chưa chốt một bước tiếp theo đủ cụ thể sau khi xử lý phản đối.";
-  else if (score >= 78) issue = "Câu trả lời bám mạch tốt; có thể sắc hơn bằng một bằng chứng hoặc điều kiện kiểm chứng cụ thể.";
+  const certaintyClaim = /(cứ yên tâm|chắc chắn|cam kết|100%|không thể trễ|không trễ được|không bao giờ)/i.test(clean);
+  const unsupportedComparison = /(bên (đó|kia).*(đểu|dở|kém|không tốt)|chất liệu bên (đó|kia))/i.test(clean);
+  let issueCandidates = [
+    "Câu trả lời còn chung chung; hãy phản hồi đúng ý khách vừa nói rồi hỏi một dữ kiện có mục đích.",
+    "Bạn chưa chỉ ra căn cứ cụ thể cho lời tư vấn nên khách chưa có cơ sở để tin hoặc quyết định.",
+  ];
+  if (isNonsense) issueCandidates = ["Câu trả lời không có nội dung tư vấn và không giải quyết điều khách vừa nói."];
+  else if (mismatch) issueCandidates = [`Câu hỏi đang lệch khỏi nhu cầu ${industry.name.toLowerCase()} và không giúp khách đánh giá ${product.name}.`];
+  else if (vagueOption) issueCandidates = ["Bạn đưa một lựa chọn mơ hồ nhưng chưa nói đó là mẫu nào, đặc điểm gì và vì sao phù hợp với khách."];
+  else if (lastCustomerIntents.includes("timing") && certaintyClaim) issueCandidates = [
+    "Bạn trả lời đúng chủ đề giao hàng nhưng khẳng định không trễ khi chưa kiểm tra tuyến giao và chưa có phương án dự phòng.",
+    "Lời cam kết giao kịp đang tuyệt đối quá; khách cần mốc xác nhận và cách xử lý nếu đơn vẫn chậm.",
+  ];
+  else if (lastCustomerIntents.includes("comparison") && unsupportedComparison) issueCandidates = [
+    "Bạn nhận xét chất liệu của bên khác nhưng không đưa căn cứ, khiến phần so sánh thiếu đáng tin.",
+    "Bạn đang hạ thấp đối thủ thay vì chứng minh điểm hơn của sản phẩm bằng tiêu chí kiểm chứng được.",
+  ];
+  else if (relevance < 0.22) issueCandidates = [
+    "Bạn chưa xử lý câu hỏi hoặc nỗi lo gần nhất của khách; các ý phía sau vì vậy bị lạc mạch.",
+    "Câu trả lời bỏ qua trọng tâm khách vừa hỏi và chuyển sang một hướng khác quá sớm.",
+  ];
+  else if (verbose) issueCandidates = ["Câu trả lời quá dài và chứa quá nhiều ý; khách khó tính sẽ không biết đâu là câu trả lời chính."];
+  else if (!empathizes) issueCandidates = [
+    "Bạn chưa xác nhận điều khách đang lo trước khi hỏi hoặc giới thiệu giải pháp.",
+    "Bạn đi thẳng vào giải thích nhưng chưa cho khách thấy mình đã hiểu đúng nỗi lo vừa nêu.",
+  ];
+  else if (!asks && scenario.step <= 5) issueCandidates = ["Bạn đã phản hồi nhưng chưa hỏi một câu chẩn đoán giúp thu hẹp nhu cầu."];
+  else if (!grounded) issueCandidates = [`Bạn chưa dùng dữ kiện đặc thù của ngành ${industry.name.toLowerCase()} để làm câu trả lời đáng tin.`];
+  else if (scenario.step >= 7 && !hasNextStep) issueCandidates = ["Bạn chưa chốt một bước tiếp theo đủ cụ thể sau khi xử lý phản đối."];
+  else if (score >= 78) issueCandidates = ["Câu trả lời bám mạch tốt; có thể sắc hơn bằng một bằng chứng hoặc điều kiện kiểm chứng cụ thể."];
+  const issue = pickLeastRepeated(
+    issueCandidates.map((text) => ({ text, type: "issue" })),
+    previousFeedback,
+    clean + transcript.length + "issue",
+  ).text;
 
-  const corrected = mismatch
-    ? `Dạ em xin lỗi, câu vừa rồi không liên quan đến nhu cầu của chị. ${industry.diagnosticQuestion}`
+  const timingCorrections = [
+    "Dạ, chị cần dùng sau ba ngày nên em sẽ kiểm tra tồn kho và thời gian giao đến khu vực của chị trước. Nếu có nguy cơ trễ, em sẽ báo ngay và đề xuất mẫu còn sẵn hoặc phương án nhận nhanh; chị cho em xin khu vực nhận hàng ạ?",
+    "Dạ, em chưa nên khẳng định chắc chắn khi chưa kiểm tra tuyến giao. Em sẽ xác nhận hàng sẵn, thời hạn dự kiến và phương án xử lý nếu vận chuyển chậm trước khi chị đặt.",
+  ];
+  const comparisonCorrections = [
+    `Dạ, em không nên đánh giá chất liệu bên khác khi chưa có căn cứ. Với ${product.name}, em sẽ so rõ loại chất liệu, độ hoàn thiện, khả năng giữ form và chính sách đổi trả để chị tự đánh giá.`,
+    `Dạ, thay vì nói bên khác không tốt, em xin đối chiếu bằng tiêu chí cụ thể: chất liệu, đường may, độ bền màu và điều kiện đổi size của ${product.name}.`,
+  ];
+  const focusCorrections = lastCustomerIntents.includes("timing")
+    ? timingCorrections
+    : lastCustomerIntents.includes("comparison")
+      ? comparisonCorrections
+      : [
+          `Dạ, em xin trả lời đúng điều chị vừa hỏi trước. ${industry.diagnosticQuestion} Sau đó em sẽ chỉ nói phần liên quan trực tiếp đến ${product.name}.`,
+          `Dạ, em sẽ làm rõ đúng nỗi lo vừa nêu bằng dữ kiện kiểm chứng được, không chuyển sang câu hỏi khác. ${industry.diagnosticQuestion}`,
+        ];
+  const correctionCandidates = mismatch
+    ? [`Dạ em xin lỗi, câu vừa rồi không liên quan đến nhu cầu của chị. ${industry.diagnosticQuestion}`]
     : vagueOption
-      ? `Dạ, em đang đề xuất ${product.name} dựa trên nhu cầu chị vừa nêu. Trước khi chị quyết định, em sẽ gửi rõ hình ảnh, đặc điểm, điều kiện áp dụng và lý do lựa chọn này phù hợp.`
-    : relevance < 0.22
-      ? `Dạ em hiểu chị đang quan tâm đúng phần vừa nêu. Trước khi tư vấn ${product.name}, ${industry.diagnosticQuestion.toLowerCase()}`
-      : `Dạ em hiểu điều chị đang cân nhắc. ${industry.diagnosticQuestion} Khi có dữ kiện đó, em sẽ nói rõ ${product.name} phù hợp ở đâu và giới hạn ở đâu.`;
+      ? [`Dạ, em đang đề xuất ${product.name} dựa trên nhu cầu chị vừa nêu. Em sẽ nói rõ mẫu, đặc điểm và lý do phù hợp trước khi hỏi chị quyết định.`]
+      : relevance < 0.22
+        ? focusCorrections
+        : lastCustomerIntents.includes("timing")
+          ? timingCorrections
+          : lastCustomerIntents.includes("comparison")
+            ? comparisonCorrections
+            : [
+                `Dạ, em hiểu điều chị đang cân nhắc. ${industry.diagnosticQuestion} Khi có dữ kiện đó, em sẽ nói rõ ${product.name} phù hợp ở đâu và giới hạn ở đâu.`,
+                `Dạ, trước hết em xin xác nhận đúng mối quan tâm của chị. ${industry.diagnosticQuestion} Em sẽ dựa vào câu trả lời đó để tư vấn, không giới thiệu lan man.`,
+              ];
+  const corrected = pickLeastRepeated(
+    correctionCandidates.map((text) => ({ text, type: "correction" })),
+    previousFeedback,
+    clean + transcript.length,
+  ).text;
 
   return {
     score,

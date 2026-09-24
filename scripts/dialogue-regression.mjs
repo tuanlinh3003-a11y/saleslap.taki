@@ -93,6 +93,56 @@ for (const industry of industries) {
   assert(replies.every((reply) => reply.split(/[.!?]+/).filter((part) => part.trim()).length <= 3), "độ dài: mỗi lượt tối đa ba câu", replies.join(" | "));
 }
 
+{
+  const industry = industries.find((item) => item.id === "fashion");
+  const product = products.find((item) => item.id === "office-dress");
+  const scenario = scenarios.find((item) => item.id === "competition");
+  const customer = customerInsights.fashion[0];
+  const comparisonQuestion = "Chỗ khác có mẫu gần giống rẻ hơn 30%. Chênh lệch nằm ở chất liệu hay chỉ ở thương hiệu?";
+  const comparison = runAdaptiveTurn({
+    answer: "Dạ chất liệu bên đó đểu, chị cứ yên tâm dùng bên em.",
+    industry,
+    product,
+    scenario,
+    customer,
+    transcript: [{ role: "customer", text: comparisonQuestion }],
+  });
+  assert(comparison.diagnostics.challengeType === "comparison_claim", "fashion: phản biện đúng lời chê đối thủ", comparison.customerMessage);
+  assert(/dựa trên|cảm tính|tiêu chí/i.test(comparison.customerMessage), "fashion: khách đòi căn cứ so sánh", comparison.customerMessage);
+  assert(!/lệch khỏi nhu cầu/i.test(comparison.customerMessage), "fashion: chất liệu không bị nhận nhầm ngành", comparison.customerMessage);
+  assert(/không nên đánh giá|thay vì nói/i.test(comparison.feedback.corrected), "fashion: chữa đúng lỗi chê đối thủ", comparison.feedback.corrected);
+
+  const deliveryQuestion = "Chị cần mặc sau ba ngày; nếu giao trễ thì phương án của em là gì?";
+  const delivery = runAdaptiveTurn({
+    answer: "Bên em làm với tất cả bên vận chuyển tại Việt Nam nên không trễ được ạ.",
+    industry,
+    product,
+    scenario,
+    customer,
+    transcript: [{ role: "customer", text: deliveryQuestion }],
+  });
+  assert(delivery.diagnostics.challengeType === "timing_claim", "fashion: bám đúng cam kết giao hàng", delivery.customerMessage);
+  assert(/trễ|vận chuyển|giao kịp/i.test(delivery.customerMessage), "fashion: khách hỏi tiếp đúng chủ đề giao hàng", delivery.customerMessage);
+  assert(delivery.feedback.score > 10, "fashion: câu giao hàng không bị chấm lệch ngành", String(delivery.feedback.score));
+  assert(/ba ngày|tuyến giao|vận chuyển chậm/i.test(delivery.feedback.corrected), "fashion: chữa đúng rủi ro giao trễ", delivery.feedback.corrected);
+
+  const repeatedFeedbackTranscript = [
+    { role: "customer", text: deliveryQuestion },
+    { role: "sale", text: "Bên em đảm bảo không trễ ạ.", feedback: delivery.feedback },
+    { role: "customer", text: "Nếu vẫn trễ thì ai xử lý cho chị?" },
+  ];
+  const nextDelivery = runAdaptiveTurn({
+    answer: "Chị cứ yên tâm, chắc chắn bên em giao kịp ạ.",
+    industry,
+    product,
+    scenario,
+    customer,
+    transcript: repeatedFeedbackTranscript,
+  });
+  assert(nextDelivery.feedback.corrected !== delivery.feedback.corrected, "chữa bài: không lặp nguyên mẫu liên tiếp", nextDelivery.feedback.corrected);
+  assert(nextDelivery.feedback.issue !== delivery.feedback.issue, "chữa bài: nhận xét không lặp nguyên mẫu liên tiếp", nextDelivery.feedback.issue);
+}
+
 await server.close();
 
 if (failures.length) {
